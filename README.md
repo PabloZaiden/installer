@@ -2,20 +2,11 @@
 
 Reusable installer, updater, and release tooling for GitHub-hosted Bun binaries.
 
-This package factors out the shared behavior used by projects like `pablozaiden/link` and `pablozaiden/ralpher`:
-
-- a generic one-line shell installer that can target a GitHub repository,
-- a TypeScript updater library for installed CLI binaries,
-- a reusable GitHub Actions workflow for release binary assets,
-- an npm publishing workflow for this TypeScript-only package.
-
 ## Install this package
 
 ```bash
 bun add @pablozaiden/installer
 ```
-
-The package exports TypeScript source directly, following the same style as `@pablozaiden/terminatui`.
 
 ## Binary asset contract
 
@@ -60,18 +51,18 @@ The installer:
 
 ### Manifest schema
 
-Single-binary example for Link:
+Single-binary example:
 
 ```json
 {
   "schemaVersion": 1,
-  "repo": "pablozaiden/link",
+  "repo": "pablozaiden/myproject",
   "installDir": "$HOME/.local/bin",
   "binaries": [
     {
-      "name": "link-cli",
-      "assetPrefix": "link-cli",
-      "postInstallMessage": "Run 'link-cli web' to start Link."
+      "name": "myproject-cli",
+      "assetPrefix": "myproject-cli",
+      "postInstallMessage": "Run 'myproject-cli' to start MyProject."
     }
   ],
   "checksums": {
@@ -85,27 +76,27 @@ Single-binary example for Link:
 }
 ```
 
-Multi-binary example for Ralpher:
+Multi-binary example:
 
 ```json
 {
   "schemaVersion": 1,
-  "repo": "pablozaiden/ralpher",
+  "repo": "pablozaiden/myproject",
   "installDir": "$HOME/.local/bin",
   "binaries": [
     {
-      "name": "ralpher",
-      "assetPrefix": "ralpher",
-      "postInstallMessage": "Run 'ralpher' to start the local server."
+      "name": "myproject",
+      "assetPrefix": "myproject",
+      "postInstallMessage": "Run 'myproject' to start the local server."
     },
     {
-      "name": "ralpher-cli",
-      "assetPrefix": "ralpher-cli",
-      "postInstallMessage": "Run 'ralpher-cli --help' to use the API client."
+      "name": "myproject-cli",
+      "assetPrefix": "myproject-cli",
+      "postInstallMessage": "Run 'myproject-cli --help' to use the API client."
     }
   ],
   "checksums": {
-    "required": false,
+    "required": true,
     "extension": ".sha256"
   }
 }
@@ -120,7 +111,7 @@ For projects without a manifest, pass binaries explicitly:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/pablozaiden/installer/main/install.sh \
-  | sh -s -- pablozaiden/link --binary link-cli
+  | sh -s -- pablozaiden/myproject --binary myproject-cli
 ```
 
 Useful options:
@@ -141,7 +132,7 @@ Use `runUpdateCommand` from an installed binary's `update` command.
 
 ```ts
 import { runUpdateCommand } from "@pablozaiden/installer";
-import { LINK_VERSION } from "./version";
+import { MYPROJECT_VERSION } from "./version";
 
 export async function runCliCommand(command: { kind: string; checkOnly?: boolean; version?: string }) {
   if (command.kind === "update") {
@@ -151,10 +142,10 @@ export async function runCliCommand(command: { kind: string; checkOnly?: boolean
         version: command.version,
       },
       {
-        repository: "pablozaiden/link",
-        binaryName: "link-cli",
-        currentVersion: LINK_VERSION,
-        productName: "Link",
+        repository: "pablozaiden/myproject",
+        binaryName: "myproject-cli",
+        currentVersion: MYPROJECT_VERSION,
+        productName: "MyProject",
         checksum: { required: true },
       },
     );
@@ -166,7 +157,7 @@ For a CLI with a companion binary installed beside it:
 
 ```ts
 import { runUpdateCommand } from "@pablozaiden/installer";
-import { RALPHER_VERSION } from "./version";
+import { MYPROJECT_VERSION } from "./version";
 
 await runUpdateCommand(
   {
@@ -174,15 +165,15 @@ await runUpdateCommand(
     version: undefined,
   },
   {
-    repository: "pablozaiden/ralpher",
-    binaryName: "ralpher-cli",
-    currentVersion: RALPHER_VERSION,
-    productName: "Ralpher",
+    repository: "pablozaiden/myproject",
+    binaryName: "myproject-cli",
+    currentVersion: MYPROJECT_VERSION,
+    productName: "MyProject",
     checksum: { required: false },
     companionBinaries: [
       {
-        binaryName: "ralpher",
-        assetPrefix: "ralpher",
+        binaryName: "myproject",
+        assetPrefix: "myproject",
         required: false
       }
     ],
@@ -237,8 +228,8 @@ jobs:
       binaries: |
         [
           {
-            "name": "link-cli",
-            "asset_prefix": "link-cli",
+            "name": "myproject-cli",
+            "asset_prefix": "myproject-cli",
             "build_command": "bun run build-binary.ts --target=$BUN_TARGET --outfile=$ASSET_PATH",
             "output_path": "$ASSET_PATH"
           }
@@ -258,16 +249,16 @@ jobs:
       binaries: |
         [
           {
-            "name": "ralpher",
-            "asset_prefix": "ralpher",
+            "name": "myproject",
+            "asset_prefix": "myproject",
             "build_command": "cd apps/server && bun src/build.ts --target=$BUN_TARGET",
-            "output_path": "apps/server/dist/ralpher-$RELEASE_TARGET"
+            "output_path": "apps/server/dist/myproject-$RELEASE_TARGET"
           },
           {
-            "name": "ralpher-cli",
-            "asset_prefix": "ralpher-cli",
+            "name": "myproject-cli",
+            "asset_prefix": "myproject-cli",
             "build_command": "cd apps/cli && bun src/build.ts --target=$BUN_TARGET",
-            "output_path": "apps/cli/dist/ralpher-cli-$RELEASE_TARGET"
+            "output_path": "apps/cli/dist/myproject-cli-$RELEASE_TARGET"
           }
         ]
 ```
@@ -297,34 +288,10 @@ On a published GitHub release, it:
 
 Manual `workflow_dispatch` publishes with the `unstable` tag.
 
-## Migration guide: Link
-
-1. Add `.github/installer.json` using the single-binary manifest above.
-2. Replace `src/server/update.ts` logic with a thin wrapper around `runUpdateCommand`.
-3. Keep Link's command parser and `LINK_VERSION`; pass them into the updater config.
-4. Replace `.github/workflows/binary-release.yml` with a caller workflow that uses `reusable-binary-release.yml`.
-5. Keep checksum publication enabled.
-6. Optionally update the README one-liner to point at `pablozaiden/installer`.
-
-## Migration guide: Ralpher
-
-1. Add `.github/installer.json` using the multi-binary manifest above.
-2. Decide whether to publish checksums immediately. If not, use `checksums.required: false` temporarily.
-3. Replace `src/cli/update.ts` logic with `runUpdateCommand` configured with `binaryName: "ralpher-cli"` and `companionBinaries: [{ binaryName: "ralpher" }]`.
-4. Replace `.github/workflows/binary-release.yml` with a caller workflow that builds both server and CLI binaries.
-5. Once checksum assets are published, switch installer/updater checksum policy to required.
-6. Optionally update the README one-liner to point at `pablozaiden/installer`.
-
 ## Development
 
 ```bash
 bun install
 bun run build
 bun test
-```
-
-Shell syntax for the installer is covered by tests and can be checked directly:
-
-```bash
-sh -n install.sh
 ```
