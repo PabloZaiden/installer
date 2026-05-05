@@ -1,7 +1,33 @@
 {
   "name": "@pablozaiden/installer",
+  "version": "0.0.0-development",
+  "description": "Reusable GitHub release binary installer and updater utilities",
   "module": "index.ts",
   "type": "module",
+  "files": [
+    "index.ts",
+    "src/**/*",
+    "install.sh",
+    "README.md"
+  ],
+  "exports": {
+    ".": {
+      "types": "./index.ts",
+      "default": "./index.ts"
+    },
+    "./manifest": {
+      "types": "./src/manifest.ts",
+      "default": "./src/manifest.ts"
+    },
+    "./update": {
+      "types": "./src/update.ts",
+      "default": "./src/update.ts"
+    }
+  },
+  "scripts": {
+    "build": "bunx tsc -p tsconfig.json --noEmit",
+    "test": "bun test"
+  },
   "devDependencies": {
     "@types/bun": "latest"
   },
