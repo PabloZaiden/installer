@@ -2,6 +2,10 @@
   "name": "@pablozaiden/installer",
   "version": "0.0.0-development",
   "description": "Reusable GitHub release binary installer and updater utilities",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/PabloZaiden/installer"
+  },
   "module": "index.ts",
   "type": "module",
   "files": [
