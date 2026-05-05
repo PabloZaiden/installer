@@ -112,6 +112,7 @@ Multi-binary example for Ralpher:
 ```
 
 `checksums.required` should be `true` for new projects. Use `false` only while migrating existing projects that do not yet publish checksum assets.
+The shell installer supports manifest `schemaVersion: 1` and fails before reading other manifest fields if a future schema version is provided.
 
 ### Installer fallback options
 
@@ -131,6 +132,8 @@ Useful options:
 --install-dir <dir>          Install directory
 --checksum required|optional|none
 ```
+
+`--checksum none` disables checksum downloads and verification entirely. `optional` attempts checksum verification when the checksum asset exists, while `required` fails if the checksum cannot be downloaded or verified.
 
 ## TypeScript updater library
 
@@ -196,8 +199,8 @@ The updater supports:
 - Linux/macOS x64/arm64 target resolution,
 - checksum verification before replacement,
 - source-mode rejection when running from `bun`,
-- atomic temp-file replacement with executable permission preservation,
-- optional companion binary updates.
+- staged temp-file replacement with executable permission preservation,
+- companion binary updates that are committed together with the primary binary and rolled back on replacement failure.
 
 Exported helpers include:
 
@@ -276,7 +279,7 @@ The workflow:
 - exports `TAG`, `VERSION`, `RELEASE_TARGET`, `BUN_TARGET`, `BINARY_NAME`, `ASSET_PREFIX`, and `ASSET_PATH` to each build command,
 - stages release assets using the shared naming convention,
 - generates `.sha256` files by default,
-- uploads workflow artifacts and GitHub release assets.
+- uploads matrix artifacts first, then publishes GitHub release assets only after all matrix builds succeed.
 
 ## Publishing this package to npm
 

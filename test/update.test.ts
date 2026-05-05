@@ -128,6 +128,7 @@ describe("updater library", () => {
       { path: `/real/usr/local/bin/.link-cli-update-test/${assetName}`, content: "new-binary" },
     ]);
     expect(state.renames).toEqual([
+      { from: "/real/usr/local/bin/link-cli", to: "/real/usr/local/bin/.link-cli-update-test/link-cli.backup" },
       { from: `/real/usr/local/bin/.link-cli-update-test/${assetName}`, to: "/real/usr/local/bin/link-cli" },
     ]);
   });
@@ -152,10 +153,48 @@ describe("updater library", () => {
       companionBinaries: [{ binaryName: "ralpher" }],
     }, dependencies)).resolves.toBe(0);
 
-    expect(state.renames.map(rename => rename.to)).toEqual([
+    expect(state.renames.filter(rename => !rename.to.endsWith(".backup")).map(rename => rename.to)).toEqual([
       "/real/usr/local/bin/ralpher",
       "/real/usr/local/bin/ralpher-cli",
     ]);
+  });
+
+  test("rolls back companion updates when any replacement fails", async () => {
+    const companion = "ralpher-v1.2.3-linux-x64";
+    const primary = "ralpher-cli-v1.2.3-linux-x64";
+    const { dependencies, state } = createDependencies([
+      releaseResponse("v1.2.3", [companion, `${companion}.sha256`, primary, `${primary}.sha256`]),
+      binaryResponse("server"),
+      checksumResponse(companion, "server"),
+      binaryResponse("cli"),
+      checksumResponse(primary, "cli"),
+    ], {
+      getExecutablePath: () => "/usr/local/bin/ralpher-cli",
+      renameFile: async (from, to) => {
+        state.renames.push({ from, to });
+        if (from.endsWith(primary)) {
+          throw new Error("simulated primary replacement failure");
+        }
+      },
+    });
+
+    await expect(runUpdateCommand({ checkOnly: false }, {
+      repository: "pablozaiden/ralpher",
+      binaryName: "ralpher-cli",
+      currentVersion: "1.2.2",
+      companionBinaries: [{ binaryName: "ralpher" }],
+    }, dependencies)).rejects.toThrow("Failed to update ralpher-cli");
+
+    expect(state.removes).toContain("/real/usr/local/bin/ralpher");
+    expect(state.renames).toContainEqual({
+      from: "/real/usr/local/bin/.ralpher-cli-update-test/ralpher-cli.backup",
+      to: "/real/usr/local/bin/ralpher-cli",
+    });
+    expect(state.renames).toContainEqual({
+      from: "/real/usr/local/bin/.ralpher-cli-update-test/ralpher.backup",
+      to: "/real/usr/local/bin/ralpher",
+    });
+    expect(state.outputs.some(output => output.startsWith("Updated "))).toBe(false);
   });
 
   test("rejects source-mode updates and missing required checksums", async () => {

@@ -81,9 +81,18 @@ json_boolean_value() {
   sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\\(true\\|false\\).*/\\1/p" | head -n 1
 }
 
+json_number_value() {
+  key=$1
+  sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\\([0-9][0-9]*\\).*/\\1/p" | head -n 1
+}
+
 manifest_string_value() {
   key=$1
   printf "%s\n" "$MANIFEST_JSON" | tr '\n' ' ' | json_string_value "$key"
+}
+
+manifest_schema_version() {
+  printf "%s\n" "$MANIFEST_JSON" | tr '\n' ' ' | json_number_value "schemaVersion"
 }
 
 manifest_checksum_value() {
@@ -204,7 +213,7 @@ install_binary() {
   os=$3
   arch=$4
   install_dir=$5
-  checksum_required=$6
+  checksum_policy=$6
   checksum_extension=$7
   binary_name=$8
   asset_prefix=$9
@@ -220,16 +229,20 @@ install_binary() {
     error "Failed to download from $download_url"
   fi
 
-  checksum_name="$asset_name$checksum_extension"
-  checksum_url="$download_url$checksum_extension"
-  if download_file "$checksum_url" "$checksum_file"; then
-    echo "Verifying $checksum_name..."
-    verify_checksum "$asset_name" "$temp_file" "$checksum_file"
-  elif [ "$checksum_required" = "true" ]; then
-    rm -f "$temp_file" "$checksum_file"
-    error "Failed to download required checksum from $checksum_url"
+  if [ "$checksum_policy" = "none" ]; then
+    echo "Skipping checksum verification for $asset_name; checksum policy is none."
   else
-    echo "Skipping checksum verification for $asset_name; $checksum_name was not published."
+    checksum_name="$asset_name$checksum_extension"
+    checksum_url="$download_url$checksum_extension"
+    if download_file "$checksum_url" "$checksum_file"; then
+      echo "Verifying $checksum_name..."
+      verify_checksum "$asset_name" "$temp_file" "$checksum_file"
+    elif [ "$checksum_policy" = "required" ]; then
+      rm -f "$temp_file" "$checksum_file"
+      error "Failed to download required checksum from $checksum_url"
+    else
+      echo "Skipping checksum verification for $asset_name; $checksum_name was not published."
+    fi
   fi
 
   mv "$temp_file" "$install_dir/$binary_name"
@@ -241,7 +254,8 @@ install_binary() {
 REPOSITORY=
 REF=$DEFAULT_REF
 INSTALL_DIR=$DEFAULT_INSTALL_DIR
-CHECKSUM_REQUIRED=true
+CHECKSUM_POLICY=required
+CHECKSUM_OPTION_SET=false
 CHECKSUM_EXTENSION=$DEFAULT_CHECKSUM_EXTENSION
 MANUAL_BINARIES=
 LAST_BINARY=
@@ -279,10 +293,10 @@ while [ $# -gt 0 ]; do
     --checksum)
       [ $# -gt 1 ] || error "--checksum requires a value."
       case "$2" in
-        required) CHECKSUM_REQUIRED=true ;;
-        optional|none) CHECKSUM_REQUIRED=false ;;
+        required|optional|none) CHECKSUM_POLICY=$2 ;;
         *) error "--checksum must be required, optional, or none." ;;
       esac
+      CHECKSUM_OPTION_SET=true
       shift 2
       ;;
     --*)
@@ -322,12 +336,20 @@ MANIFEST_JSON=
 MANIFEST_SOURCE=
 if fetch_manifest "$REPOSITORY" "$REF"; then
   echo "Loaded installer manifest: $MANIFEST_SOURCE"
+  manifest_schema_version=$(manifest_schema_version)
+  [ "$manifest_schema_version" = "1" ] || error "Unsupported installer manifest schemaVersion: ${manifest_schema_version:-missing}. Supported schemaVersion is 1."
   manifest_repo=$(manifest_string_value "repo")
   [ -z "$manifest_repo" ] || REPOSITORY=$manifest_repo
   manifest_install_dir=$(manifest_string_value "installDir")
   [ -z "$manifest_install_dir" ] || INSTALL_DIR=$manifest_install_dir
   manifest_checksum_required=$(manifest_checksum_boolean "required")
-  [ -z "$manifest_checksum_required" ] || CHECKSUM_REQUIRED=$manifest_checksum_required
+  if [ "$CHECKSUM_OPTION_SET" != "true" ] && [ -n "$manifest_checksum_required" ]; then
+    if [ "$manifest_checksum_required" = "true" ]; then
+      CHECKSUM_POLICY=required
+    else
+      CHECKSUM_POLICY=optional
+    fi
+  fi
   manifest_checksum_extension=$(manifest_checksum_value "extension")
   [ -z "$manifest_checksum_extension" ] || CHECKSUM_EXTENSION=$manifest_checksum_extension
   manifest_supported_arches=$(manifest_platform_arches "$OS")
@@ -352,7 +374,7 @@ echo "Latest version: $LATEST_TAG"
 
 printf "%s\n" "$BINARY_LINES" | while IFS='|' read -r binary_name asset_prefix required post_message; do
   [ -n "$binary_name" ] || continue
-  install_binary "$REPOSITORY" "$LATEST_TAG" "$OS" "$ARCH" "$INSTALL_DIR" "$CHECKSUM_REQUIRED" "$CHECKSUM_EXTENSION" "$binary_name" "$asset_prefix"
+  install_binary "$REPOSITORY" "$LATEST_TAG" "$OS" "$ARCH" "$INSTALL_DIR" "$CHECKSUM_POLICY" "$CHECKSUM_EXTENSION" "$binary_name" "$asset_prefix"
   [ -z "$post_message" ] || echo "$post_message"
 done
 

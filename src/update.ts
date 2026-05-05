@@ -90,6 +90,14 @@ type InstalledBinaryTarget = {
   required: boolean;
 };
 
+type StagedBinaryReplacement = {
+  target: InstalledBinaryTarget;
+  asset: ResolvedReleaseAsset;
+  tempDirectory: string;
+  tempPath: string;
+  backupPath: string;
+};
+
 function createDefaultUpdateDependencies(): UpdaterDependencies {
   return {
     fetchFn: fetch,
@@ -310,17 +318,18 @@ async function resolveInstalledBinaryPath(binaryName: string, productName: strin
   return resolvedPath;
 }
 
-async function replaceInstalledBinary(
+async function stageInstalledBinaryReplacement(
   target: InstalledBinaryTarget,
   asset: ResolvedReleaseAsset,
   config: UpdaterConfig,
   checksumPolicy: Required<UpdaterChecksumPolicy>,
   dependencies: UpdaterDependencies,
-): Promise<string> {
+): Promise<StagedBinaryReplacement> {
   const targetPath = target.targetPath;
   let tempDirectory: string | undefined;
   let tempPath: string | undefined;
   let tempCreated = false;
+  let staged = false;
 
   try {
     tempDirectory = await dependencies.createTempDirectory(dirname(targetPath), config.tempDirectoryPrefix ?? `.${config.binaryName}-update-`);
@@ -339,18 +348,61 @@ async function replaceInstalledBinary(
     const installedBinaryStat = await dependencies.statFile(targetPath);
     const executableMode = installedBinaryStat.mode & 0o777;
     await dependencies.chmodFile(tempPath, executableMode || 0o755);
-    dependencies.out(`Replacing ${targetPath}...`);
-    await dependencies.renameFile(tempPath, targetPath);
-    return targetPath;
+    staged = true;
+    return {
+      target,
+      asset,
+      tempDirectory,
+      tempPath,
+      backupPath: join(tempDirectory, `${basename(targetPath)}.backup`),
+    };
   } catch (error) {
     throw toPermissionMessage(config.productName ?? config.binaryName, targetPath, error);
   } finally {
-    if (tempCreated && tempPath) {
-      await dependencies.removeFile(tempPath);
+    if (!staged) {
+      if (tempPath) {
+        await dependencies.removeFile(tempPath);
+      }
+      if (tempDirectory) {
+        await dependencies.removeFile(tempDirectory);
+      }
     }
-    if (tempDirectory) {
-      await dependencies.removeFile(tempDirectory);
+  }
+}
+
+async function cleanupStagedBinaryReplacements(
+  stagedReplacements: StagedBinaryReplacement[],
+  dependencies: Pick<UpdaterDependencies, "removeFile">,
+): Promise<void> {
+  for (const staged of stagedReplacements) {
+    await dependencies.removeFile(staged.tempDirectory);
+  }
+}
+
+async function replaceStagedBinaryReplacements(
+  stagedReplacements: StagedBinaryReplacement[],
+  config: UpdaterConfig,
+  dependencies: UpdaterDependencies,
+): Promise<void> {
+  const movedBackups: StagedBinaryReplacement[] = [];
+  const installedReplacements: StagedBinaryReplacement[] = [];
+
+  try {
+    for (const staged of stagedReplacements) {
+      dependencies.out(`Replacing ${staged.target.targetPath}...`);
+      await dependencies.renameFile(staged.target.targetPath, staged.backupPath);
+      movedBackups.push(staged);
+      await dependencies.renameFile(staged.tempPath, staged.target.targetPath);
+      installedReplacements.push(staged);
     }
+  } catch (error) {
+    for (const staged of installedReplacements.reverse()) {
+      await dependencies.removeFile(staged.target.targetPath);
+    }
+    for (const staged of movedBackups.reverse()) {
+      await dependencies.renameFile(staged.backupPath, staged.target.targetPath);
+    }
+    throw toPermissionMessage(config.productName ?? config.binaryName, config.binaryName, error);
   }
 }
 
@@ -377,11 +429,6 @@ async function resolveInstalledBinaryTargets(config: UpdaterConfig, dependencies
     required: true,
   });
   return targets;
-}
-
-function formatCompanionUpdateWarning(binaryName: string, error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return `Warning: ${message} Continuing with ${binaryName} update.`;
 }
 
 export async function runUpdateCommand(
@@ -426,29 +473,29 @@ export async function runUpdateCommand(
     return 0;
   }
 
-  const installedTargets = await resolveInstalledBinaryTargets(normalizedConfig, dependencies);
-  for (const target of installedTargets) {
-    const asset = resolveReleaseAsset(release, releasePlatform, {
-      binaryName: target.binaryName,
-      assetPrefix: target.assetPrefix,
-      checksum: checksumPolicy,
-    });
-    let installedPath: string;
-    try {
-      installedPath = await replaceInstalledBinary(target, asset, normalizedConfig, checksumPolicy, dependencies);
-    } catch (error) {
-      if (!target.required) {
-        dependencies.err(formatCompanionUpdateWarning(normalizedConfig.binaryName, error));
-        continue;
-      }
-      throw error;
+  const stagedReplacements: StagedBinaryReplacement[] = [];
+  try {
+    const installedTargets = await resolveInstalledBinaryTargets(normalizedConfig, dependencies);
+    for (const target of installedTargets) {
+      const asset = resolveReleaseAsset(release, releasePlatform, {
+        binaryName: target.binaryName,
+        assetPrefix: target.assetPrefix,
+        checksum: checksumPolicy,
+      });
+      stagedReplacements.push(await stageInstalledBinaryReplacement(target, asset, normalizedConfig, checksumPolicy, dependencies));
     }
 
-    if (command.version) {
-      dependencies.out(`Installed ${target.binaryName} ${asset.version} at ${installedPath}.`);
-    } else {
-      dependencies.out(`Updated ${target.binaryName} ${currentVersion} -> ${asset.version} at ${installedPath}.`);
+    await replaceStagedBinaryReplacements(stagedReplacements, normalizedConfig, dependencies);
+
+    for (const { target, asset } of stagedReplacements) {
+      if (command.version) {
+        dependencies.out(`Installed ${target.binaryName} ${asset.version} at ${target.targetPath}.`);
+      } else {
+        dependencies.out(`Updated ${target.binaryName} ${currentVersion} -> ${asset.version} at ${target.targetPath}.`);
+      }
     }
+  } finally {
+    await cleanupStagedBinaryReplacements(stagedReplacements, dependencies);
   }
 
   return 0;
