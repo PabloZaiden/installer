@@ -1,0 +1,153 @@
+name: Reusable Binary Release
+
+on:
+  workflow_call:
+    inputs:
+      binaries:
+        description: >-
+          JSON array of binary specs. Each item supports name, optional asset_prefix,
+          build_command, and output_path. The workflow exposes TAG, VERSION,
+          RELEASE_TARGET, BUN_TARGET, BINARY_NAME, ASSET_PREFIX, and ASSET_PATH
+          to build_command.
+        required: true
+        type: string
+      install_command:
+        description: Dependency installation command.
+        required: false
+        type: string
+        default: bun install --frozen-lockfile
+      prebuild_command:
+        description: Optional command to run before each target's binary builds.
+        required: false
+        type: string
+        default: ""
+      bun_version:
+        description: Bun version passed to oven-sh/setup-bun.
+        required: false
+        type: string
+        default: latest
+      update_package_version:
+        description: Whether to update the root package.json version from the release tag before building.
+        required: false
+        type: boolean
+        default: true
+      generate_checksums:
+        description: Whether to generate SHA-256 checksum files beside each release asset.
+        required: false
+        type: boolean
+        default: true
+      targets:
+        description: JSON target matrix. Defaults to Linux/macOS x64/arm64.
+        required: false
+        type: string
+        default: >-
+          [
+            {"os":"ubuntu-latest","target":"linux-x64","bun_target":"bun-linux-x64"},
+            {"os":"ubuntu-latest","target":"linux-arm64","bun_target":"bun-linux-arm64"},
+            {"os":"macos-latest","target":"darwin-x64","bun_target":"bun-darwin-x64"},
+            {"os":"macos-latest","target":"darwin-arm64","bun_target":"bun-darwin-arm64"}
+          ]
+
+jobs:
+  build-binaries:
+    name: Build ${{ matrix.target.target }}
+    runs-on: ${{ matrix.target.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(inputs.targets) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ inputs.bun_version }}
+
+      - name: Install dependencies
+        run: ${{ inputs.install_command }}
+
+      - name: Update package.json version
+        if: ${{ inputs.update_package_version }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          jq --arg v "$VERSION" '.version = $v' package.json > package.json.tmp
+          mv package.json.tmp package.json
+
+      - name: Run prebuild command
+        if: ${{ inputs.prebuild_command != '' }}
+        run: ${{ inputs.prebuild_command }}
+
+      - name: Build and stage release assets
+        env:
+          BINARIES_JSON: ${{ inputs.binaries }}
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ github.ref_name }}
+          RELEASE_TARGET: ${{ matrix.target.target }}
+          BUN_TARGET: ${{ matrix.target.bun_target }}
+          GENERATE_CHECKSUMS: ${{ inputs.generate_checksums }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          export TAG VERSION RELEASE_TARGET BUN_TARGET
+          mkdir -p dist/release-assets
+          printf '%s' "$BINARIES_JSON" > /tmp/binaries.json
+
+          jq -c '.[]' /tmp/binaries.json | while read -r spec; do
+            BINARY_NAME="$(printf '%s' "$spec" | jq -r '.name')"
+            ASSET_PREFIX="$(printf '%s' "$spec" | jq -r '.asset_prefix // .assetPrefix // .name')"
+            BUILD_COMMAND="$(printf '%s' "$spec" | jq -r '.build_command // .buildCommand')"
+            OUTPUT_PATH="$(printf '%s' "$spec" | jq -r '.output_path // .outputPath')"
+            ASSET_NAME="${ASSET_PREFIX}-${TAG}-${RELEASE_TARGET}"
+            ASSET_PATH="dist/release-assets/${ASSET_NAME}"
+            export BINARY_NAME ASSET_PREFIX ASSET_NAME ASSET_PATH OUTPUT_PATH
+
+            if [ -z "$BUILD_COMMAND" ] || [ "$BUILD_COMMAND" = "null" ]; then
+              echo "Missing build_command for ${BINARY_NAME}" >&2
+              exit 1
+            fi
+            if [ -z "$OUTPUT_PATH" ] || [ "$OUTPUT_PATH" = "null" ]; then
+              echo "Missing output_path for ${BINARY_NAME}" >&2
+              exit 1
+            fi
+
+            eval "$BUILD_COMMAND"
+            RESOLVED_OUTPUT_PATH="$(eval "printf '%s' \"$OUTPUT_PATH\"")"
+            test -f "$RESOLVED_OUTPUT_PATH"
+            cp "$RESOLVED_OUTPUT_PATH" "$ASSET_PATH"
+            chmod +x "$ASSET_PATH"
+            if [ "$GENERATE_CHECKSUMS" = "true" ]; then
+              (cd dist/release-assets && shasum -a 256 "$ASSET_NAME" > "$ASSET_NAME.sha256")
+            fi
+          done
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ matrix.target.target }}
+          path: dist/release-assets/*
+          if-no-files-found: error
+
+  publish-release-assets:
+    name: Publish release assets
+    runs-on: ubuntu-latest
+    needs: build-binaries
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download release asset artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-assets-*
+          path: dist/release-assets
+          merge-multiple: true
+
+      - name: Upload assets to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.ref_name }}" dist/release-assets/* --clobber
