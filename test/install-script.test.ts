@@ -6,6 +6,11 @@ import { join } from "node:path";
 const repositoryRoot = new URL("..", import.meta.url).pathname;
 const installScript = join(repositoryRoot, "install.sh");
 
+const currentOs = process.platform === "darwin" ? "darwin" : "linux";
+const currentArch = process.arch === "arm64" ? "arm64" : "x64";
+const currentTarget = `${currentOs}-${currentArch}`;
+const unsupportedOs = currentOs === "darwin" ? "linux" : "darwin";
+
 describe("install.sh", () => {
   test("installs a manifest-defined binary from a local release fixture", async () => {
     const tempDir = await Bun.$`mktemp -d`.text().then(value => value.trim());
@@ -15,7 +20,7 @@ describe("install.sh", () => {
     const installDir = join(tempDir, "bin");
     const repo = "example/tool";
     const tag = "v1.2.3";
-    const assetName = `${repo}/releases/download/${tag}/tool-cli-${tag}-linux-x64`;
+    const assetName = `${repo}/releases/download/${tag}/tool-cli-${tag}-${currentTarget}`;
     const assetPath = join(releaseRoot, assetName);
 
     await mkdir(join(rawRoot, repo, "main", ".github"), { recursive: true });
@@ -28,7 +33,7 @@ describe("install.sh", () => {
     }));
     await writeFile(join(apiRoot, "repos", repo, "releases", "latest"), JSON.stringify({ tag_name: tag }));
     await writeFile(assetPath, "binary");
-    await writeFile(`${assetPath}.sha256`, `${createHash("sha256").update("binary").digest("hex")}  tool-cli-${tag}-linux-x64\n`);
+    await writeFile(`${assetPath}.sha256`, `${createHash("sha256").update("binary").digest("hex")}  tool-cli-${tag}-${currentTarget}\n`);
 
     const result = await Bun.$`RAW_BASE_URL=${`file://${rawRoot}`} GITHUB_API_BASE_URL=${`file://${apiRoot}`} GITHUB_RELEASE_BASE_URL=${`file://${releaseRoot}`} sh ${installScript} ${repo} --install-dir ${installDir}`.quiet();
 
@@ -50,13 +55,13 @@ describe("install.sh", () => {
     await writeFile(join(rawRoot, repo, "main", ".github", "installer.json"), JSON.stringify({
       schemaVersion: 1,
       binaries: [{ name: "tool-cli" }],
-      platforms: { darwin: ["arm64"] },
+      platforms: { [unsupportedOs]: [currentArch] },
     }));
 
     const result = await Bun.$`RAW_BASE_URL=${`file://${rawRoot}`} sh ${installScript} ${repo} --install-dir ${join(tempDir, "bin")}`.nothrow().quiet();
 
     expect(result.exitCode).toBe(1);
-    expect(result.stderr.toString()).toContain("Manifest does not support platform linux-x64");
+    expect(result.stderr.toString()).toContain(`Manifest does not support platform ${currentTarget}`);
   });
 
   test("skips checksum download and verification when checksum policy is none", async () => {
@@ -67,7 +72,7 @@ describe("install.sh", () => {
     const installDir = join(tempDir, "bin");
     const repo = "example/tool";
     const tag = "v1.2.3";
-    const assetName = `${repo}/releases/download/${tag}/tool-cli-${tag}-linux-x64`;
+    const assetName = `${repo}/releases/download/${tag}/tool-cli-${tag}-${currentTarget}`;
     const assetPath = join(releaseRoot, assetName);
 
     await mkdir(join(rawRoot, repo, "main", ".github"), { recursive: true });
@@ -80,7 +85,7 @@ describe("install.sh", () => {
     }));
     await writeFile(join(apiRoot, "repos", repo, "releases", "latest"), JSON.stringify({ tag_name: tag }));
     await writeFile(assetPath, "binary");
-    await writeFile(`${assetPath}.sha256`, `${"0".repeat(64)}  tool-cli-${tag}-linux-x64\n`);
+    await writeFile(`${assetPath}.sha256`, `${"0".repeat(64)}  tool-cli-${tag}-${currentTarget}\n`);
 
     const result = await Bun.$`RAW_BASE_URL=${`file://${rawRoot}`} GITHUB_API_BASE_URL=${`file://${apiRoot}`} GITHUB_RELEASE_BASE_URL=${`file://${releaseRoot}`} sh ${installScript} ${repo} --install-dir ${installDir} --checksum none`.quiet();
 
