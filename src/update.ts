@@ -328,7 +328,6 @@ async function stageInstalledBinaryReplacement(
   const targetPath = target.targetPath;
   let tempDirectory: string | undefined;
   let tempPath: string | undefined;
-  let tempCreated = false;
   let staged = false;
 
   try {
@@ -343,7 +342,6 @@ async function stageInstalledBinaryReplacement(
     const payload = new Uint8Array(await response.arrayBuffer());
     await verifyReleaseAssetChecksum(asset, payload, checksumPolicy, dependencies);
     await dependencies.writeBinary(tempPath, payload);
-    tempCreated = true;
 
     const installedBinaryStat = await dependencies.statFile(targetPath);
     const executableMode = installedBinaryStat.mode & 0o777;
