@@ -5,7 +5,7 @@
     "": {
       "name": "@pablozaiden/installer",
       "devDependencies": {
-        "@types/bun": "latest",
+        "@types/bun": "^1.3.13",
         "typescript": "^7.0.2",
       },
       "peerDependencies": {
