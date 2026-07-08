@@ -290,6 +290,8 @@ Manual `workflow_dispatch` publishes with the `unstable` tag.
 
 ## Development
 
+This package type-checks with TypeScript 7.
+
 ```bash
 bun install
 bun run build
