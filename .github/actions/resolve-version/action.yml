@@ -1,0 +1,50 @@
+name: Resolve build version
+description: Resolve a release or main snapshot version and optionally update package.json.
+
+inputs:
+  mode:
+    description: Version mode: release or main.
+    required: false
+    default: release
+  release_tag:
+    description: Release tag to use in release mode. Defaults to GITHUB_REF_NAME.
+    required: false
+    default: ""
+  latest_release_tag:
+    description: Latest release tag to use in main mode. If omitted, it is read with gh.
+    required: false
+    default: ""
+  github_token:
+    description: Token used by gh when resolving the latest release in main mode.
+    required: false
+    default: ""
+  update_package_version:
+    description: Whether to update the package.json version after resolving it.
+    required: false
+    default: "false"
+  package_json:
+    description: Path to the package.json file to update.
+    required: false
+    default: package.json
+
+outputs:
+  version:
+    description: Resolved version without a leading v.
+    value: ${{ steps.resolve.outputs.version }}
+  base_version:
+    description: Normalized release version used as the base.
+    value: ${{ steps.resolve.outputs.base_version }}
+
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        RELEASE_TAG: ${{ inputs.release_tag }}
+        LATEST_RELEASE_TAG: ${{ inputs.latest_release_tag }}
+        GITHUB_TOKEN: ${{ inputs.github_token || github.token }}
+        UPDATE_PACKAGE_VERSION: ${{ inputs.update_package_version }}
+        PACKAGE_JSON: ${{ inputs.package_json }}
+      run: bash "${{ github.action_path }}/resolve-version.sh"
