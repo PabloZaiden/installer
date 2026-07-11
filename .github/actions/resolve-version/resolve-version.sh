@@ -85,12 +85,14 @@ case "$MODE" in
 
     MAJOR=$((10#${BASH_REMATCH[1]}))
     MINOR=$((10#${BASH_REMATCH[2]}))
-    PATCH=$((10#${BASH_REMATCH[3]} + 1))
+    BASE_PATCH=$((10#${BASH_REMATCH[3]}))
+    BASE_VERSION="${MAJOR}.${MINOR}.${BASE_PATCH}"
+    PATCH=$((BASE_PATCH + 1))
     TIMESTAMP="${BUILD_TIMESTAMP:-$(date -u +"%Y-%m-%d-%H-%M")}"
     SHORT_SHA="${SHORT_SHA:-${GITHUB_SHA:-}}"
     SHORT_SHA="${SHORT_SHA:0:7}"
     [[ "$TIMESTAMP" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]{2}$ ]] || fail "invalid build timestamp: $TIMESTAMP"
-    [[ "$SHORT_SHA" =~ ^[0-9a-fA-F]{7}$ ]] || fail "GITHUB_SHA must contain at least seven hexadecimal characters."
+    [[ "$SHORT_SHA" =~ ^[0-9a-fA-F]{7}$ ]] || fail "SHORT_SHA or GITHUB_SHA must contain at least seven hexadecimal characters."
     VERSION="${MAJOR}.${MINOR}.${PATCH}-main-${TIMESTAMP}-${SHORT_SHA}"
     ;;
   *)

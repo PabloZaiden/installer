@@ -73,6 +73,7 @@ describe("resolve-version action", () => {
 
     expect(result.exitCode).toBe(0);
     expect(outputValue(output, "version")).toBe("8.5.10-main-2026-07-11-14-48-abcdef1");
+    expect(outputValue(output, "base_version")).toBe("8.5.9");
   });
 
   test("rejects a non-semver latest release", async () => {
