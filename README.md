@@ -26,6 +26,36 @@ Supported targets are:
 
 Tags may be provided as `1.2.3` or `v1.2.3`; release assets are always resolved with the `v` tag form published by GitHub releases.
 
+## Reusable build version action
+
+Use the shared action to resolve the version embedded in a build:
+
+```yaml
+- name: Resolve build version
+  id: version
+  uses: pablozaiden/installer/.github/actions/resolve-version@main
+  with:
+    mode: main
+    github_token: ${{ github.token }}
+    update_package_version: true
+```
+
+The action exposes `steps.version.outputs.version` and
+`steps.version.outputs.base_version`. In `release` mode, it removes the leading
+`v` from `release_tag` (or `GITHUB_REF_NAME`). In `main` mode, it reads the
+latest published release, increments its patch component, and appends the UTC
+timestamp and seven-character commit SHA:
+
+```text
+8.5.9 -> 8.5.10-main-2026-07-11-14-48-abcdef1
+```
+
+If the repository has no published release, the base version is `0.0.0`, so
+the first main build is `0.0.1-main-<timestamp>-<short-sha>`. Set
+`latest_release_tag` when the release lookup must be supplied explicitly.
+Pin the action to an immutable commit in production workflows instead of
+using `main`.
+
 ## Generic one-line installer
 
 Use the installer directly from this repository:
