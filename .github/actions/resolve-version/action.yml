@@ -1,9 +1,9 @@
 name: Resolve build version
-description: Resolve a release or main snapshot version and optionally update package.json.
+description: "Resolve a release or main snapshot version and optionally update package.json."
 
 inputs:
   mode:
-    description: Version mode: release or main.
+    description: "Version mode: release or main."
     required: false
     default: release
   release_tag:
