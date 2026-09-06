@@ -253,6 +253,9 @@ jobs:
     uses: pablozaiden/installer/.github/workflows/reusable-binary-release.yml@main
     permissions:
       contents: write
+    secrets:
+      macos_signing_certificate_base64: ${{ secrets.MACOS_SIGNING_CERTIFICATE_BASE64 }}
+      macos_signing_certificate_password: ${{ secrets.MACOS_SIGNING_CERTIFICATE_PASSWORD }}
     with:
       prebuild_command: bun run build
       binaries: |
@@ -265,6 +268,15 @@ jobs:
           }
         ]
 ```
+
+When both macOS signing secrets are provided, the workflow imports the
+Base64-encoded PKCS#12 certificate into a temporary keychain on each macOS
+runner and signs every macOS binary before staging it. The password is never
+written to the workflow environment after keychain setup. If neither secret is
+provided, macOS artifacts remain unsigned; providing only one secret fails the
+macOS job. The signing certificate must be trusted for code signing by the
+runner; self-signed certificates should use a CA-capable code-signing
+certificate.
 
 For a project with multiple binaries:
 
