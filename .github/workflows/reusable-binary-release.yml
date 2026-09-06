@@ -105,9 +105,9 @@ jobs:
             exit 1
           fi
 
-          CERTIFICATE_PATH="$RUNNER_TEMP/clanky-macos-signing.p12"
-          CERTIFICATE_PEM_PATH="$RUNNER_TEMP/clanky-macos-signing.pem"
-          KEYCHAIN_PATH="$RUNNER_TEMP/clanky-macos-signing.keychain-db"
+          CERTIFICATE_PATH="$RUNNER_TEMP/macos-signing.p12"
+          CERTIFICATE_PEM_PATH="$RUNNER_TEMP/macos-signing.pem"
+          KEYCHAIN_PATH="$RUNNER_TEMP/macos-signing.keychain-db"
           KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"
           printf '%s' "$MACOS_SIGNING_CERTIFICATE_BASE64" | base64 -D > "$CERTIFICATE_PATH"
           {
@@ -130,6 +130,7 @@ jobs:
             -passin env:MACOS_SIGNING_CERTIFICATE_PASSWORD \
             -out "$CERTIFICATE_PEM_PATH"
           security add-trusted-cert \
+            -k "$KEYCHAIN_PATH" \
             -r trustRoot \
             -p codeSign \
             "$CERTIFICATE_PEM_PATH"

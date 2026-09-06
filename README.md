@@ -274,9 +274,10 @@ Base64-encoded PKCS#12 certificate into a temporary keychain on each macOS
 runner and signs every macOS binary before staging it. The password is never
 written to the workflow environment after keychain setup. If neither secret is
 provided, macOS artifacts remain unsigned; providing only one secret fails the
-macOS job. The signing certificate must be trusted for code signing by the
-runner; self-signed certificates should use a CA-capable code-signing
-certificate.
+macOS job. The PKCS#12 must contain the code-signing certificate and its private key.
+The workflow trusts that certificate for code signing on the ephemeral runner;
+self-signed certificates are supported when their certificate and private key
+are supplied together.
 
 For a project with multiple binaries:
 
