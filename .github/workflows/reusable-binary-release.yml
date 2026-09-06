@@ -47,6 +47,13 @@ on:
             {"os":"macos-latest","target":"darwin-x64","bun_target":"bun-darwin-x64"},
             {"os":"macos-latest","target":"darwin-arm64","bun_target":"bun-darwin-arm64"}
           ]
+    secrets:
+      macos_signing_certificate_base64:
+        description: Optional Base64-encoded PKCS#12 certificate for macOS binaries.
+        required: false
+      macos_signing_certificate_password:
+        description: Password for the macOS PKCS#12 signing certificate.
+        required: false
 
 jobs:
   build-binaries:
@@ -81,6 +88,71 @@ jobs:
       - name: Run prebuild command
         if: ${{ inputs.prebuild_command != '' }}
         run: ${{ inputs.prebuild_command }}
+
+      - name: Prepare macOS signing keychain
+        if: startsWith(matrix.target.target, 'darwin-')
+        env:
+          MACOS_SIGNING_CERTIFICATE_BASE64: ${{ secrets.macos_signing_certificate_base64 }}
+          MACOS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.macos_signing_certificate_password }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MACOS_SIGNING_CERTIFICATE_BASE64:-}" ] && [ -z "${MACOS_SIGNING_CERTIFICATE_PASSWORD:-}" ]; then
+            echo "::notice::No macOS signing certificate was supplied; macOS artifacts will remain unsigned."
+            exit 0
+          fi
+          if [ -z "${MACOS_SIGNING_CERTIFICATE_BASE64:-}" ] || [ -z "${MACOS_SIGNING_CERTIFICATE_PASSWORD:-}" ]; then
+            echo "Both macOS signing secrets must be supplied together." >&2
+            exit 1
+          fi
+
+          CERTIFICATE_PATH="$RUNNER_TEMP/macos-signing.p12"
+          CERTIFICATE_PEM_PATH="$RUNNER_TEMP/macos-signing.pem"
+          KEYCHAIN_PATH="$RUNNER_TEMP/macos-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"
+          printf '%s' "$MACOS_SIGNING_CERTIFICATE_BASE64" | base64 -D > "$CERTIFICATE_PATH"
+          {
+            printf 'MACOS_SIGNING_CERTIFICATE_PATH=%s\n' "$CERTIFICATE_PATH"
+            printf 'MACOS_SIGNING_CERTIFICATE_PEM_PATH=%s\n' "$CERTIFICATE_PEM_PATH"
+            printf 'MACOS_SIGNING_KEYCHAIN=%s\n' "$KEYCHAIN_PATH"
+          } >> "$GITHUB_ENV"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$MACOS_SIGNING_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign
+          openssl pkcs12 \
+            -in "$CERTIFICATE_PATH" \
+            -clcerts \
+            -nokeys \
+            -passin env:MACOS_SIGNING_CERTIFICATE_PASSWORD \
+            -out "$CERTIFICATE_PEM_PATH"
+          security add-trusted-cert \
+            -k "$KEYCHAIN_PATH" \
+            -r trustRoot \
+            -p codeSign \
+            "$CERTIFICATE_PEM_PATH"
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$KEYCHAIN_PASSWORD" \
+            "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+
+          SIGNING_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | sed -n 's/.*"\(.*\)"/\1/p' \
+            | head -n 1)"
+          if [ -z "$SIGNING_IDENTITY" ]; then
+            echo "No codesigning identity was found in the imported macOS certificate." >&2
+            security find-identity -v -p codesigning "$KEYCHAIN_PATH" >&2 || true
+            exit 1
+          fi
+
+          {
+            printf 'MACOS_SIGNING_IDENTITY=%s\n' "$SIGNING_IDENTITY"
+          } >> "$GITHUB_ENV"
 
       - name: Build and stage release assets
         env:
@@ -118,6 +190,14 @@ jobs:
             eval "$BUILD_COMMAND"
             RESOLVED_OUTPUT_PATH="$(eval "printf '%s' \"$OUTPUT_PATH\"")"
             test -f "$RESOLVED_OUTPUT_PATH"
+            if [[ "$RELEASE_TARGET" == darwin-* && -n "${MACOS_SIGNING_KEYCHAIN:-}" ]]; then
+              codesign \
+                --force \
+                --sign "$MACOS_SIGNING_IDENTITY" \
+                --keychain "$MACOS_SIGNING_KEYCHAIN" \
+                --timestamp=none \
+                "$RESOLVED_OUTPUT_PATH"
+            fi
             cp "$RESOLVED_OUTPUT_PATH" "$ASSET_PATH"
             chmod +x "$ASSET_PATH"
             if [ "$GENERATE_CHECKSUMS" = "true" ]; then
@@ -131,6 +211,20 @@ jobs:
           name: release-assets-${{ matrix.target.target }}
           path: dist/release-assets/*
           if-no-files-found: error
+
+      - name: Remove macOS signing keychain
+        if: ${{ always() && startsWith(matrix.target.target, 'darwin-') }}
+        run: |
+          set -euo pipefail
+          if [ -n "${MACOS_SIGNING_KEYCHAIN:-}" ]; then
+            security delete-keychain "$MACOS_SIGNING_KEYCHAIN" || true
+          fi
+          if [ -n "${MACOS_SIGNING_CERTIFICATE_PATH:-}" ]; then
+            rm -f "$MACOS_SIGNING_CERTIFICATE_PATH"
+          fi
+          if [ -n "${MACOS_SIGNING_CERTIFICATE_PEM_PATH:-}" ]; then
+            rm -f "$MACOS_SIGNING_CERTIFICATE_PEM_PATH"
+          fi
 
   publish-release-assets:
     name: Publish release assets
