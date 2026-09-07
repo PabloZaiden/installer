@@ -106,49 +106,21 @@ jobs:
           fi
 
           CERTIFICATE_PATH="$RUNNER_TEMP/macos-signing.p12"
-          CERTIFICATE_PEM_PATH="$RUNNER_TEMP/macos-signing.pem"
-          PRIVATE_KEY_PEM_PATH="$RUNNER_TEMP/macos-signing-key.pem"
           KEYCHAIN_PATH="$RUNNER_TEMP/macos-signing.keychain-db"
           KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"
           printf '%s' "$MACOS_SIGNING_CERTIFICATE_BASE64" | base64 -D > "$CERTIFICATE_PATH"
           {
             printf 'MACOS_SIGNING_CERTIFICATE_PATH=%s\n' "$CERTIFICATE_PATH"
-            printf 'MACOS_SIGNING_CERTIFICATE_PEM_PATH=%s\n' "$CERTIFICATE_PEM_PATH"
-            printf 'MACOS_SIGNING_PRIVATE_KEY_PEM_PATH=%s\n' "$PRIVATE_KEY_PEM_PATH"
             printf 'MACOS_SIGNING_KEYCHAIN=%s\n' "$KEYCHAIN_PATH"
           } >> "$GITHUB_ENV"
 
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
-          openssl pkcs12 \
-            -in "$CERTIFICATE_PATH" \
-            -clcerts \
-            -nokeys \
-            -passin env:MACOS_SIGNING_CERTIFICATE_PASSWORD \
-            -out "$CERTIFICATE_PEM_PATH"
-          openssl pkcs12 \
-            -in "$CERTIFICATE_PATH" \
-            -nocerts \
-            -nodes \
-            -passin env:MACOS_SIGNING_CERTIFICATE_PASSWORD \
-            -out "$PRIVATE_KEY_PEM_PATH"
-          # macOS Security may reject modern AES-encrypted PKCS#12 containers.
-          chmod 600 "$PRIVATE_KEY_PEM_PATH"
-          if ! security import "$PRIVATE_KEY_PEM_PATH" \
+          security import "$CERTIFICATE_PATH" \
             -k "$KEYCHAIN_PATH" \
-            -T /usr/bin/codesign; then
-            rm -f "$PRIVATE_KEY_PEM_PATH"
-            exit 1
-          fi
-          rm -f "$PRIVATE_KEY_PEM_PATH"
-          security import "$CERTIFICATE_PEM_PATH" \
-            -k "$KEYCHAIN_PATH"
-          security add-trusted-cert \
-            -k "$KEYCHAIN_PATH" \
-            -r trustRoot \
-            -p codeSign \
-            "$CERTIFICATE_PEM_PATH"
+            -P "$MACOS_SIGNING_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign
           security set-key-partition-list \
             -S apple-tool:,apple:,codesign: \
             -s \
@@ -156,12 +128,12 @@ jobs:
             "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH"
 
-          SIGNING_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
-            | sed -n 's/.*"\(.*\)"/\1/p' \
+          SIGNING_IDENTITY="$(security find-certificate -a -Z "$KEYCHAIN_PATH" \
+            | sed -n 's/^SHA-1 hash: \([0-9A-Fa-f]\{40\}\)$/\1/p' \
             | head -n 1)"
           if [ -z "$SIGNING_IDENTITY" ]; then
-            echo "No codesigning identity was found in the imported macOS certificate." >&2
-            security find-identity -v -p codesigning "$KEYCHAIN_PATH" >&2 || true
+            echo "No imported macOS signing certificate fingerprint was found." >&2
+            security find-certificate -a -Z "$KEYCHAIN_PATH" >&2 || true
             exit 1
           fi
 
@@ -236,12 +208,6 @@ jobs:
           fi
           if [ -n "${MACOS_SIGNING_CERTIFICATE_PATH:-}" ]; then
             rm -f "$MACOS_SIGNING_CERTIFICATE_PATH"
-          fi
-          if [ -n "${MACOS_SIGNING_CERTIFICATE_PEM_PATH:-}" ]; then
-            rm -f "$MACOS_SIGNING_CERTIFICATE_PEM_PATH"
-          fi
-          if [ -n "${MACOS_SIGNING_PRIVATE_KEY_PEM_PATH:-}" ]; then
-            rm -f "$MACOS_SIGNING_PRIVATE_KEY_PEM_PATH"
           fi
 
   publish-release-assets:
