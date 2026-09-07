@@ -134,9 +134,14 @@ jobs:
             -passin env:MACOS_SIGNING_CERTIFICATE_PASSWORD \
             -out "$PRIVATE_KEY_PEM_PATH"
           # macOS Security may reject modern AES-encrypted PKCS#12 containers.
-          security import "$PRIVATE_KEY_PEM_PATH" \
+          chmod 600 "$PRIVATE_KEY_PEM_PATH"
+          if ! security import "$PRIVATE_KEY_PEM_PATH" \
             -k "$KEYCHAIN_PATH" \
-            -T /usr/bin/codesign
+            -T /usr/bin/codesign; then
+            rm -f "$PRIVATE_KEY_PEM_PATH"
+            exit 1
+          fi
+          rm -f "$PRIVATE_KEY_PEM_PATH"
           security import "$CERTIFICATE_PEM_PATH" \
             -k "$KEYCHAIN_PATH"
           security add-trusted-cert \
