@@ -128,12 +128,12 @@ jobs:
             "$KEYCHAIN_PATH"
           security list-keychains -d user -s "$KEYCHAIN_PATH"
 
-          SIGNING_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
-            | sed -n 's/.*"\(.*\)"/\1/p' \
+          SIGNING_IDENTITY="$(security find-certificate -a -Z "$KEYCHAIN_PATH" \
+            | sed -n 's/^SHA-1 hash: \([0-9A-Fa-f]\{40\}\)$/\1/p' \
             | head -n 1)"
           if [ -z "$SIGNING_IDENTITY" ]; then
-            echo "No codesigning identity was found in the imported macOS certificate." >&2
-            security find-identity -v -p codesigning "$KEYCHAIN_PATH" >&2 || true
+            echo "No imported macOS signing certificate fingerprint was found." >&2
+            security find-certificate -a -Z "$KEYCHAIN_PATH" >&2 || true
             exit 1
           fi
 
