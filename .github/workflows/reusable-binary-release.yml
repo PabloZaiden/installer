@@ -120,7 +120,7 @@ jobs:
           security import "$CERTIFICATE_PATH" \
             -k "$KEYCHAIN_PATH" \
             -P "$MACOS_SIGNING_CERTIFICATE_PASSWORD" \
-            -A
+            -T /usr/bin/codesign
           security set-key-partition-list \
             -S apple-tool:,apple:,codesign: \
             -s \
