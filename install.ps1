@@ -60,6 +60,30 @@ function Invoke-JsonRequest([string]$Uri) {
   }
 }
 
+function Invoke-RawJsonRequest([string]$Uri) {
+  $response = Invoke-WebRequest -UseBasicParsing -Uri $Uri -Headers @{
+    "User-Agent" = "pablozaiden-installer"
+    "Accept" = "application/json"
+  }
+  return ConvertFrom-Json -InputObject ([string]$response.Content)
+}
+
+function Test-HttpStatus {
+  param(
+    [Parameter(Mandatory = $true)]
+    [object]$ErrorRecord,
+    [Parameter(Mandatory = $true)]
+    [int]$StatusCode
+  )
+
+  $responseProperty = $ErrorRecord.Exception.PSObject.Properties["Response"]
+  if ($null -eq $responseProperty -or $null -eq $responseProperty.Value) {
+    return $false
+  }
+  $statusProperty = $responseProperty.Value.PSObject.Properties["StatusCode"]
+  return $null -ne $statusProperty -and [int]$statusProperty.Value -eq $StatusCode
+}
+
 function Expand-InstallDirectory([string]$Value) {
   if ($Value -eq '$HOME' -or $Value -eq "~") {
     return $HOME
@@ -102,13 +126,16 @@ function Get-Manifest {
   foreach ($path in $DefaultManifestPaths) {
     $uri = "$rawBaseUrl/$TargetRepository/$TargetRef/$path"
     try {
-      $manifest = Invoke-JsonRequest $uri
+      $manifest = Invoke-RawJsonRequest $uri
       return [PSCustomObject]@{
         Path = $path
         Value = $manifest
       }
     } catch {
-      continue
+      if (Test-HttpStatus -ErrorRecord $_ -StatusCode 404) {
+        continue
+      }
+      throw
     }
   }
   return $null
@@ -215,7 +242,7 @@ function Install-Binary {
     try {
       Invoke-Download -Uri $downloadUrl -OutFile $tempFile
     } catch {
-      if (-not $required) {
+      if (-not $required -and (Test-HttpStatus -ErrorRecord $_ -StatusCode 404)) {
         [Console]::WriteLine("Skipping optional binary $name; $assetName was not published.")
         return $false
       }
@@ -227,19 +254,23 @@ function Install-Binary {
     } else {
       $checksumName = "$assetName$ChecksumExtension"
       $checksumUrl = "$downloadUrl$ChecksumExtension"
+      $checksumDownloaded = $true
       try {
         Invoke-Download -Uri $checksumUrl -OutFile $checksumFile
+      } catch {
+        if ($ChecksumPolicy -eq "required" -or -not (Test-HttpStatus -ErrorRecord $_ -StatusCode 404)) {
+          throw
+        }
+        [Console]::WriteLine("Skipping checksum verification for $assetName; $checksumName was not published.")
+        $checksumDownloaded = $false
+      }
+      if ($checksumDownloaded) {
         [Console]::WriteLine("Verifying $checksumName...")
         $expected = Get-ExpectedChecksum -ChecksumPath $checksumFile -AssetName $assetName
         $actual = Get-Sha256 $tempFile
         if ($expected -ne $actual) {
           Fail "Checksum verification failed for $assetName`: expected $expected, got $actual."
         }
-      } catch {
-        if ($ChecksumPolicy -eq "required") {
-          throw
-        }
-        [Console]::WriteLine("Skipping checksum verification for $assetName; $checksumName was not published.")
       }
     }
 
