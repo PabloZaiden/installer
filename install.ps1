@@ -162,6 +162,17 @@ function Get-ExpectedChecksum {
   Fail "Checksum for $AssetName did not contain a valid SHA-256 entry."
 }
 
+function Get-Sha256([string]$Path) {
+  $stream = [IO.File]::OpenRead($Path)
+  $algorithm = [Security.Cryptography.SHA256]::Create()
+  try {
+    return [BitConverter]::ToString($algorithm.ComputeHash($stream)).Replace("-", "").ToLowerInvariant()
+  } finally {
+    $algorithm.Dispose()
+    $stream.Dispose()
+  }
+}
+
 function Install-Binary {
   param(
     [Parameter(Mandatory = $true)]
@@ -220,7 +231,7 @@ function Install-Binary {
         Invoke-Download -Uri $checksumUrl -OutFile $checksumFile
         [Console]::WriteLine("Verifying $checksumName...")
         $expected = Get-ExpectedChecksum -ChecksumPath $checksumFile -AssetName $assetName
-        $actual = (Get-FileHash -LiteralPath $tempFile -Algorithm SHA256).Hash.ToLowerInvariant()
+        $actual = Get-Sha256 $tempFile
         if ($expected -ne $actual) {
           Fail "Checksum verification failed for $assetName`: expected $expected, got $actual."
         }

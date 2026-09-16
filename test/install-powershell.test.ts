@@ -120,7 +120,7 @@ windowsTest("the updater helper replaces staged Windows executables", async () =
     }, {
       getPlatform: () => ({ platform: "win32", arch: architecture }),
       getExecutablePath: () => targetPath,
-      getCurrentProcessId: () => 2_147_483_647,
+      getCurrentProcessId: () => 0,
       fetchFn: (async (_input: string | URL | Request) => {
         const response = responses.shift();
         if (!response) throw new Error("Unexpected updater request");

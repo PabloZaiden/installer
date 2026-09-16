@@ -106,16 +106,26 @@ param(
   [Parameter(Mandatory = $true)]
   [int]$ParentProcessId,
   [Parameter(Mandatory = $true)]
-  [string]$PlanPath
+  [string]$PlanPath,
+  [Parameter(Mandatory = $true)]
+  [string]$StatusPath
 )
 
 $ErrorActionPreference = "Stop"
+trap {
+  Set-Content -LiteralPath $StatusPath -Encoding UTF8 -Value $_.Exception.Message
+  exit 1
+}
 $plan = Get-Content -LiteralPath $PlanPath -Raw | ConvertFrom-Json
 $deadline = [DateTime]::UtcNow.AddMinutes(5)
 
-while (Get-Process -Id $ParentProcessId -ErrorAction SilentlyContinue) {
+while ($ParentProcessId -gt 0) {
+  $parentProcess = Get-Process -Id $ParentProcessId -ErrorAction SilentlyContinue
+  if ($null -eq $parentProcess) {
+    break
+  }
   if ([DateTime]::UtcNow -ge $deadline) {
-    Set-Content -LiteralPath $plan.statusPath -Encoding UTF8 -Value "Timed out waiting for process $ParentProcessId to exit."
+    Set-Content -LiteralPath $StatusPath -Encoding UTF8 -Value "Timed out waiting for process $ParentProcessId to exit."
     exit 1
   }
   Start-Sleep -Milliseconds 100
@@ -143,18 +153,18 @@ try {
   } catch {
     $failure = $failure + " Rollback failed: " + $_.Exception.Message
   }
-  Set-Content -LiteralPath $plan.statusPath -Encoding UTF8 -Value $failure
+  Set-Content -LiteralPath $StatusPath -Encoding UTF8 -Value $failure
   exit 1
 }
 
-Remove-Item -LiteralPath $plan.statusPath -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $StatusPath -Force -ErrorAction SilentlyContinue
 $cleanupDirectories = @($plan.replacements | ForEach-Object { $_.tempDirectory })
 $cleanupDirectories += $plan.coordinationDirectory
 foreach ($directory in ($cleanupDirectories | Select-Object -Unique)) {
   try {
     Remove-Item -LiteralPath $directory -Force -Recurse
   } catch {
-    Set-Content -LiteralPath $plan.statusPath -Encoding UTF8 -Value ("Update installed but cleanup failed: " + $_.Exception.Message)
+    Set-Content -LiteralPath $StatusPath -Encoding UTF8 -Value ("Update installed but cleanup failed: " + $_.Exception.Message)
   }
 }
 `;
@@ -521,6 +531,8 @@ async function scheduleWindowsBinaryReplacements(
       String(dependencies.getCurrentProcessId()),
       "-PlanPath",
       planPath,
+      "-StatusPath",
+      statusPath,
     ]);
     scheduled = true;
   } finally {
