@@ -101,73 +101,106 @@ type StagedBinaryReplacement = {
   backupPath: string;
 };
 
-const WINDOWS_UPDATE_HELPER = String.raw`
+function powerShellString(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+function windowsUpdateHelper(
+  stagedReplacements: StagedBinaryReplacement[],
+  coordinationDirectory: string,
+  statusPath: string,
+): string {
+  const replacements = stagedReplacements.map((staged) => [
+    "  [PSCustomObject]@{",
+    `    TargetPath = ${powerShellString(staged.target.targetPath)}`,
+    `    TempDirectory = ${powerShellString(staged.tempDirectory)}`,
+    `    TempPath = ${powerShellString(staged.tempPath)}`,
+    `    BackupPath = ${powerShellString(staged.backupPath)}`,
+    "  }",
+  ].join("\n")).join("\n");
+
+  return String.raw`
 param(
   [Parameter(Mandatory = $true)]
-  [int]$ParentProcessId,
-  [Parameter(Mandatory = $true)]
-  [string]$PlanPath,
-  [Parameter(Mandatory = $true)]
-  [string]$StatusPath
+  [int]$ParentProcessId
 )
 
 $ErrorActionPreference = "Stop"
-trap {
-  Set-Content -LiteralPath $StatusPath -Encoding UTF8 -Value $_.Exception.Message
-  exit 1
+$StatusPath = ${powerShellString(statusPath)}
+$CoordinationDirectory = ${powerShellString(coordinationDirectory)}
+$replacements = @(
+${replacements}
+)
+$utf8 = [System.Text.UTF8Encoding]::new($false)
+
+function Write-UpdateStatus([string]$Message) {
+  [System.IO.File]::WriteAllText($StatusPath, $Message, $utf8)
 }
-$plan = Get-Content -LiteralPath $PlanPath -Raw | ConvertFrom-Json
+
 $deadline = [DateTime]::UtcNow.AddMinutes(5)
 
 while ($ParentProcessId -gt 0) {
-  $parentProcess = Get-Process -Id $ParentProcessId -ErrorAction SilentlyContinue
-  if ($null -eq $parentProcess) {
+  try {
+    $parentProcess = [System.Diagnostics.Process]::GetProcessById($ParentProcessId)
+    if ($parentProcess.HasExited) {
+      break
+    }
+  } catch [System.ArgumentException] {
     break
   }
   if ([DateTime]::UtcNow -ge $deadline) {
-    Set-Content -LiteralPath $StatusPath -Encoding UTF8 -Value "Timed out waiting for process $ParentProcessId to exit."
+    Write-UpdateStatus "Timed out waiting for process $ParentProcessId to exit."
     exit 1
   }
-  Start-Sleep -Milliseconds 100
+  [System.Threading.Thread]::Sleep(100)
 }
 
 $movedBackups = [System.Collections.Generic.List[object]]::new()
 $installedReplacements = [System.Collections.Generic.List[object]]::new()
 
 try {
-  foreach ($replacement in $plan.replacements) {
-    Move-Item -LiteralPath $replacement.targetPath -Destination $replacement.backupPath
+  foreach ($replacement in $replacements) {
+    [System.IO.File]::Move($replacement.TargetPath, $replacement.BackupPath)
     $movedBackups.Add($replacement)
-    Move-Item -LiteralPath $replacement.tempPath -Destination $replacement.targetPath
+    [System.IO.File]::Move($replacement.TempPath, $replacement.TargetPath)
     $installedReplacements.Add($replacement)
   }
 } catch {
   $failure = $_.Exception.Message
   try {
     for ($index = $installedReplacements.Count - 1; $index -ge 0; $index -= 1) {
-      Remove-Item -LiteralPath $installedReplacements[$index].targetPath -Force -ErrorAction SilentlyContinue
+      [System.IO.File]::Delete($installedReplacements[$index].TargetPath)
     }
     for ($index = $movedBackups.Count - 1; $index -ge 0; $index -= 1) {
-      Move-Item -LiteralPath $movedBackups[$index].backupPath -Destination $movedBackups[$index].targetPath
+      [System.IO.File]::Move(
+        $movedBackups[$index].BackupPath,
+        $movedBackups[$index].TargetPath
+      )
     }
   } catch {
     $failure = $failure + " Rollback failed: " + $_.Exception.Message
   }
-  Set-Content -LiteralPath $StatusPath -Encoding UTF8 -Value $failure
+  Write-UpdateStatus $failure
   exit 1
 }
 
-Remove-Item -LiteralPath $StatusPath -Force -ErrorAction SilentlyContinue
-$cleanupDirectories = @($plan.replacements | ForEach-Object { $_.tempDirectory })
-$cleanupDirectories += $plan.coordinationDirectory
-foreach ($directory in ($cleanupDirectories | Select-Object -Unique)) {
+[System.IO.File]::Delete($StatusPath)
+$cleanupDirectories = [System.Collections.Generic.HashSet[string]]::new(
+  [System.StringComparer]::OrdinalIgnoreCase
+)
+foreach ($replacement in $replacements) {
+  [void]$cleanupDirectories.Add($replacement.TempDirectory)
+}
+[void]$cleanupDirectories.Add($CoordinationDirectory)
+foreach ($directory in $cleanupDirectories) {
   try {
-    Remove-Item -LiteralPath $directory -Force -Recurse
+    [System.IO.Directory]::Delete($directory, $true)
   } catch {
-    Set-Content -LiteralPath $StatusPath -Encoding UTF8 -Value ("Update installed but cleanup failed: " + $_.Exception.Message)
+    Write-UpdateStatus ("Update installed but cleanup failed: " + $_.Exception.Message)
   }
 }
 `;
+}
 
 function createDefaultUpdateDependencies(): UpdaterDependencies {
   return {
@@ -503,22 +536,14 @@ async function scheduleWindowsBinaryReplacements(
     `.${config.binaryName}-update-helper-`,
   );
   const helperPath = join(coordinationDirectory, "apply-update.ps1");
-  const planPath = join(coordinationDirectory, "update-plan.json");
   const statusPath = `${primary.target.targetPath}.update-error.log`;
   let scheduled = false;
   try {
     await dependencies.removeFile(statusPath);
-    await dependencies.writeBinary(helperPath, WINDOWS_UPDATE_HELPER);
-    await dependencies.writeBinary(planPath, `${JSON.stringify({
-      coordinationDirectory,
-      statusPath,
-      replacements: stagedReplacements.map((staged) => ({
-        targetPath: staged.target.targetPath,
-        tempDirectory: staged.tempDirectory,
-        tempPath: staged.tempPath,
-        backupPath: staged.backupPath,
-      })),
-    }, null, 2)}\n`);
+    await dependencies.writeBinary(
+      helperPath,
+      windowsUpdateHelper(stagedReplacements, coordinationDirectory, statusPath),
+    );
     dependencies.spawnDetached("powershell.exe", [
       "-NoLogo",
       "-NoProfile",
@@ -529,10 +554,6 @@ async function scheduleWindowsBinaryReplacements(
       helperPath,
       "-ParentProcessId",
       String(dependencies.getCurrentProcessId()),
-      "-PlanPath",
-      planPath,
-      "-StatusPath",
-      statusPath,
     ]);
     scheduled = true;
   } finally {

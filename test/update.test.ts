@@ -201,8 +201,8 @@ describe("updater library", () => {
     expect(state.spawns[0]?.args).toContain("-ParentProcessId");
     expect(state.spawns[0]?.args).toContain("1234");
     expect(state.writes.some(({ path }) => path.endsWith("apply-update.ps1"))).toBe(true);
-    const plan = state.writes.find(({ path }) => path.endsWith("update-plan.json"));
-    expect(plan?.content).toContain("/real/programs/link-cli.exe");
+    const helper = state.writes.find(({ path }) => path.endsWith("apply-update.ps1"));
+    expect(helper?.content).toContain("/real/programs/link-cli.exe");
     expect(state.outputs.at(-1)).toContain("will complete after process 1234 exits");
   });
 
