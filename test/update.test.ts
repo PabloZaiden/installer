@@ -198,11 +198,12 @@ describe("updater library", () => {
     expect(state.renames).toHaveLength(0);
     expect(state.spawns).toHaveLength(1);
     expect(state.spawns[0]?.command).toBe("powershell.exe");
-    expect(state.spawns[0]?.args).toContain("-ParentProcessId");
-    expect(state.spawns[0]?.args).toContain("1234");
-    expect(state.writes.some(({ path }) => path.endsWith("apply-update.ps1"))).toBe(true);
-    const helper = state.writes.find(({ path }) => path.endsWith("apply-update.ps1"));
-    expect(helper?.content).toContain("/real/programs/link-cli.exe");
+    const encodedIndex = state.spawns[0]?.args.indexOf("-EncodedCommand") ?? -1;
+    const encodedHelper = state.spawns[0]?.args[encodedIndex + 1];
+    expect(encodedHelper).toBeDefined();
+    const helper = Buffer.from(encodedHelper ?? "", "base64").toString("utf16le");
+    expect(helper).toContain("$ParentProcessId = 1234");
+    expect(helper).toContain("/real/programs/link-cli.exe");
     expect(state.outputs.at(-1)).toContain("will complete after process 1234 exits");
   });
 

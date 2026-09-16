@@ -109,8 +109,8 @@ function powerShellString(value: string): string {
 
 function windowsUpdateHelper(
   stagedReplacements: StagedBinaryReplacement[],
-  coordinationDirectory: string,
   statusPath: string,
+  parentProcessId: number,
 ): string {
   const replacements = stagedReplacements.map((staged) => [
     "  [PSCustomObject]@{",
@@ -122,14 +122,9 @@ function windowsUpdateHelper(
   ].join("\n")).join("\n");
 
   return String.raw`
-param(
-  [Parameter(Mandatory = $true)]
-  [int]$ParentProcessId
-)
-
 $ErrorActionPreference = "Stop"
+$ParentProcessId = ${String(parentProcessId)}
 $StatusPath = ${powerShellString(statusPath)}
-$CoordinationDirectory = ${powerShellString(coordinationDirectory)}
 $replacements = @(
 ${replacements}
 )
@@ -194,7 +189,6 @@ $cleanupDirectories = [System.Collections.Generic.HashSet[string]]::new(
 foreach ($replacement in $replacements) {
   [void]$cleanupDirectories.Add($replacement.TempDirectory)
 }
-[void]$cleanupDirectories.Add($CoordinationDirectory)
 foreach ($directory in $cleanupDirectories) {
   try {
     [System.IO.Directory]::Delete($directory, $true)
@@ -531,43 +525,28 @@ async function replaceStagedBinaryReplacements(
 
 async function scheduleWindowsBinaryReplacements(
   stagedReplacements: StagedBinaryReplacement[],
-  config: UpdaterConfig,
   dependencies: UpdaterDependencies,
 ): Promise<void> {
   const primary = stagedReplacements.at(-1);
   if (!primary) {
     throw new Error("No staged Windows binary replacements were provided.");
   }
-  const coordinationDirectory = await dependencies.createTempDirectory(
-    dirname(primary.target.targetPath),
-    `.${config.binaryName}-update-helper-`,
-  );
-  const helperPath = join(coordinationDirectory, "apply-update.ps1");
   const statusPath = `${primary.target.targetPath}.update-error.log`;
-  let scheduled = false;
-  try {
-    await dependencies.removeFile(statusPath);
-    await dependencies.writeBinary(
-      helperPath,
-      windowsUpdateHelper(stagedReplacements, coordinationDirectory, statusPath),
-    );
-    dependencies.spawnDetached("powershell.exe", [
-      "-NoLogo",
-      "-NoProfile",
-      "-NonInteractive",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-File",
-      helperPath,
-      "-ParentProcessId",
-      String(dependencies.getCurrentProcessId()),
-    ]);
-    scheduled = true;
-  } finally {
-    if (!scheduled) {
-      await dependencies.removeFile(coordinationDirectory);
-    }
-  }
+  const parentProcessId = dependencies.getCurrentProcessId();
+  const encodedHelper = Buffer.from(
+    windowsUpdateHelper(stagedReplacements, statusPath, parentProcessId),
+    "utf16le",
+  ).toString("base64");
+  await dependencies.removeFile(statusPath);
+  dependencies.spawnDetached("powershell.exe", [
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-EncodedCommand",
+    encodedHelper,
+  ]);
 }
 
 async function resolveInstalledBinaryTargets(
@@ -662,7 +641,7 @@ export async function runUpdateCommand(
     }
 
     if (releasePlatform.os === "windows") {
-      await scheduleWindowsBinaryReplacements(stagedReplacements, normalizedConfig, dependencies);
+      await scheduleWindowsBinaryReplacements(stagedReplacements, dependencies);
       deferredWindowsReplacement = true;
       dependencies.out(
         `Staged ${normalizedConfig.productName ?? normalizedConfig.binaryName} ${primaryAsset.version}. `
