@@ -26,7 +26,7 @@ export type InstallerManifest = {
   installDir?: string;
   binaries: InstallerManifestBinary[];
   checksums?: InstallerChecksumPolicy;
-  platforms?: Partial<Record<"linux" | "darwin", Array<"x64" | "arm64">>>;
+  platforms?: Partial<Record<"linux" | "darwin" | "windows", Array<"x64" | "arm64">>>;
   postInstallMessage?: string;
 };
 
@@ -118,7 +118,7 @@ function parsePlatforms(value: unknown): InstallerManifest["platforms"] {
   }
   const raw = expectObject(value, "platforms");
   const platforms: InstallerManifest["platforms"] = {};
-  for (const os of ["linux", "darwin"] as const) {
+  for (const os of ["linux", "darwin", "windows"] as const) {
     const arches = raw[os];
     if (arches === undefined) {
       continue;
@@ -168,7 +168,7 @@ function normalizeTargets(platforms: InstallerManifest["platforms"]): ReleaseTar
     return [...SUPPORTED_RELEASE_TARGETS];
   }
   const targets: ReleaseTarget[] = [];
-  for (const os of ["linux", "darwin"] as const) {
+  for (const os of ["linux", "darwin", "windows"] as const) {
     for (const arch of platforms[os] ?? []) {
       targets.push(`${os}-${arch}`);
     }

@@ -16,7 +16,7 @@ describe("installer manifest", () => {
         { name: "ralpher-cli" },
       ],
       checksums: { required: false },
-      platforms: { linux: ["x64"], darwin: ["arm64"] },
+      platforms: { linux: ["x64"], darwin: ["arm64"], windows: ["x64"] },
     }));
 
     expect(normalizeInstallerManifest(manifest, "pablozaiden/fallback")).toEqual({
@@ -28,7 +28,7 @@ describe("installer manifest", () => {
         { name: "ralpher-cli", assetPrefix: "ralpher-cli", required: true, postInstallMessage: undefined },
       ],
       checksums: { required: false, extension: ".sha256" },
-      targets: ["linux-x64", "darwin-arm64"],
+      targets: ["linux-x64", "darwin-arm64", "windows-x64"],
       postInstallMessage: undefined,
     });
   });

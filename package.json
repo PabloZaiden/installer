@@ -12,6 +12,7 @@
     "index.ts",
     "src/**/*",
     "install.sh",
+    "install.ps1",
     "README.md"
   ],
   "exports": {

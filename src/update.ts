@@ -10,6 +10,7 @@ import {
   githubApiRepositoryUrl,
   normalizeReleaseTag,
   normalizeReleaseVersion,
+  releaseBinaryFileName,
   resolveReleasePlatform,
   type GitHubRepository,
   type ReleasePlatform,
@@ -62,6 +63,8 @@ export type UpdaterDependencies = {
   renameFile: (from: string, to: string) => Promise<void>;
   removeFile: (path: string) => Promise<void>;
   statFile: (path: string) => Promise<{ mode: number }>;
+  getCurrentProcessId: () => number;
+  spawnDetached: (command: string, args: readonly string[]) => Promise<void>;
 };
 
 export type GitHubReleaseAsset = {
@@ -98,6 +101,102 @@ type StagedBinaryReplacement = {
   backupPath: string;
 };
 
+function powerShellString(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
+function windowsUpdateHelper(
+  stagedReplacements: StagedBinaryReplacement[],
+  statusPath: string,
+  parentProcessId: number,
+): string {
+  const replacements = stagedReplacements.map((staged) => [
+    "  [PSCustomObject]@{",
+    `    TargetPath = ${powerShellString(staged.target.targetPath)}`,
+    `    TempDirectory = ${powerShellString(staged.tempDirectory)}`,
+    `    TempPath = ${powerShellString(staged.tempPath)}`,
+    `    BackupPath = ${powerShellString(staged.backupPath)}`,
+    "  }",
+  ].join("\n")).join("\n");
+
+  return String.raw`
+$ErrorActionPreference = "Stop"
+$ParentProcessId = ${String(parentProcessId)}
+$StatusPath = ${powerShellString(statusPath)}
+$replacements = @(
+${replacements}
+)
+$utf8 = [System.Text.UTF8Encoding]::new($false)
+
+function Write-UpdateStatus([string]$Message) {
+  [System.IO.File]::WriteAllText($StatusPath, $Message, $utf8)
+}
+
+Write-UpdateStatus "Update helper started."
+$deadline = [DateTime]::UtcNow.AddMinutes(5)
+
+while ($ParentProcessId -gt 0) {
+  try {
+    $parentProcess = [System.Diagnostics.Process]::GetProcessById($ParentProcessId)
+    if ($parentProcess.HasExited) {
+      break
+    }
+  } catch [System.ArgumentException] {
+    break
+  }
+  if ([DateTime]::UtcNow -ge $deadline) {
+    Write-UpdateStatus "Timed out waiting for process $ParentProcessId to exit."
+    exit 1
+  }
+  [System.Threading.Thread]::Sleep(100)
+}
+
+$movedBackups = [System.Collections.Generic.List[object]]::new()
+$installedReplacements = [System.Collections.Generic.List[object]]::new()
+
+try {
+  foreach ($replacement in $replacements) {
+    [System.IO.File]::Move($replacement.TargetPath, $replacement.BackupPath)
+    $movedBackups.Add($replacement)
+    [System.IO.File]::Move($replacement.TempPath, $replacement.TargetPath)
+    $installedReplacements.Add($replacement)
+  }
+} catch {
+  $failure = $_.Exception.Message
+  try {
+    for ($index = $installedReplacements.Count - 1; $index -ge 0; $index -= 1) {
+      [System.IO.File]::Delete($installedReplacements[$index].TargetPath)
+    }
+    for ($index = $movedBackups.Count - 1; $index -ge 0; $index -= 1) {
+      [System.IO.File]::Move(
+        $movedBackups[$index].BackupPath,
+        $movedBackups[$index].TargetPath
+      )
+    }
+  } catch {
+    $failure = $failure + " Rollback failed: " + $_.Exception.Message
+  }
+  Write-UpdateStatus $failure
+  exit 1
+}
+
+[System.IO.File]::Delete($StatusPath)
+$cleanupDirectories = [System.Collections.Generic.HashSet[string]]::new(
+  [System.StringComparer]::OrdinalIgnoreCase
+)
+foreach ($replacement in $replacements) {
+  [void]$cleanupDirectories.Add($replacement.TempDirectory)
+}
+foreach ($directory in $cleanupDirectories) {
+  try {
+    [System.IO.Directory]::Delete($directory, $true)
+  } catch {
+    Write-UpdateStatus ("Update installed but cleanup failed: " + $_.Exception.Message)
+  }
+}
+`;
+}
+
 function createDefaultUpdateDependencies(): UpdaterDependencies {
   return {
     fetchFn: fetch,
@@ -126,6 +225,20 @@ function createDefaultUpdateDependencies(): UpdaterDependencies {
     statFile: async path => {
       const result = await stat(path);
       return { mode: result.mode };
+    },
+    getCurrentProcessId: () => process.pid,
+    spawnDetached: async (command, args) => {
+      // Bun's detached children remain in its kill-on-close job object on Windows.
+      const bootstrap = Bun.spawn(["cmd.exe", "/d", "/c", "start", "", "/b", command, ...args], {
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+        windowsHide: true,
+      });
+      const exitCode = await bootstrap.exited;
+      if (exitCode !== 0) {
+        throw new Error(`Failed to launch the deferred updater (cmd.exe exited with ${String(exitCode)}).`);
+      }
     },
   };
 }
@@ -307,7 +420,7 @@ export async function verifyReleaseAssetChecksum(
 
 async function resolveInstalledBinaryPath(binaryName: string, productName: string, dependencies: UpdaterDependencies): Promise<string> {
   const executablePath = dependencies.getExecutablePath();
-  const executableName = basename(executablePath);
+  const executableName = basename(executablePath).toLowerCase().replace(/\.exe$/, "");
   if (executableName === "bun" || executableName.startsWith("bun-")) {
     throw new Error(`${binaryName} update only works from an installed ${productName} binary. Use the installer script when running from source.`);
   }
@@ -323,6 +436,7 @@ async function stageInstalledBinaryReplacement(
   asset: ResolvedReleaseAsset,
   config: UpdaterConfig,
   checksumPolicy: Required<UpdaterChecksumPolicy>,
+  platform: ReleasePlatform,
   dependencies: UpdaterDependencies,
 ): Promise<StagedBinaryReplacement> {
   const targetPath = target.targetPath;
@@ -343,9 +457,11 @@ async function stageInstalledBinaryReplacement(
     await verifyReleaseAssetChecksum(asset, payload, checksumPolicy, dependencies);
     await dependencies.writeBinary(tempPath, payload);
 
-    const installedBinaryStat = await dependencies.statFile(targetPath);
-    const executableMode = installedBinaryStat.mode & 0o777;
-    await dependencies.chmodFile(tempPath, executableMode || 0o755);
+    if (platform.os !== "windows") {
+      const installedBinaryStat = await dependencies.statFile(targetPath);
+      const executableMode = installedBinaryStat.mode & 0o777;
+      await dependencies.chmodFile(tempPath, executableMode || 0o755);
+    }
     staged = true;
     return {
       target,
@@ -404,11 +520,41 @@ async function replaceStagedBinaryReplacements(
   }
 }
 
-async function resolveInstalledBinaryTargets(config: UpdaterConfig, dependencies: UpdaterDependencies): Promise<InstalledBinaryTarget[]> {
+async function scheduleWindowsBinaryReplacements(
+  stagedReplacements: StagedBinaryReplacement[],
+  dependencies: UpdaterDependencies,
+): Promise<void> {
+  const primary = stagedReplacements.at(-1);
+  if (!primary) {
+    throw new Error("No staged Windows binary replacements were provided.");
+  }
+  const statusPath = `${primary.target.targetPath}.update-error.log`;
+  const parentProcessId = dependencies.getCurrentProcessId();
+  const encodedHelper = Buffer.from(
+    windowsUpdateHelper(stagedReplacements, statusPath, parentProcessId),
+    "utf16le",
+  ).toString("base64");
+  await dependencies.removeFile(statusPath);
+  await dependencies.spawnDetached("powershell.exe", [
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-EncodedCommand",
+    encodedHelper,
+  ]);
+}
+
+async function resolveInstalledBinaryTargets(
+  config: UpdaterConfig,
+  platform: ReleasePlatform,
+  dependencies: UpdaterDependencies,
+): Promise<InstalledBinaryTarget[]> {
   const primaryPath = await resolveInstalledBinaryPath(config.binaryName, config.productName ?? config.binaryName, dependencies);
   const targets: InstalledBinaryTarget[] = [];
   for (const companion of config.companionBinaries ?? []) {
-    const companionPath = join(dirname(primaryPath), companion.binaryName);
+    const companionPath = join(dirname(primaryPath), releaseBinaryFileName(companion.binaryName, platform));
     if (await dependencies.fileExists(companionPath)) {
       targets.push({
         binaryName: companion.binaryName,
@@ -472,15 +618,33 @@ export async function runUpdateCommand(
   }
 
   const stagedReplacements: StagedBinaryReplacement[] = [];
+  let deferredWindowsReplacement = false;
   try {
-    const installedTargets = await resolveInstalledBinaryTargets(normalizedConfig, dependencies);
+    const installedTargets = await resolveInstalledBinaryTargets(normalizedConfig, releasePlatform, dependencies);
     for (const target of installedTargets) {
       const asset = resolveReleaseAsset(release, releasePlatform, {
         binaryName: target.binaryName,
         assetPrefix: target.assetPrefix,
         checksum: checksumPolicy,
       });
-      stagedReplacements.push(await stageInstalledBinaryReplacement(target, asset, normalizedConfig, checksumPolicy, dependencies));
+      stagedReplacements.push(await stageInstalledBinaryReplacement(
+        target,
+        asset,
+        normalizedConfig,
+        checksumPolicy,
+        releasePlatform,
+        dependencies,
+      ));
+    }
+
+    if (releasePlatform.os === "windows") {
+      await scheduleWindowsBinaryReplacements(stagedReplacements, dependencies);
+      deferredWindowsReplacement = true;
+      dependencies.out(
+        `Staged ${normalizedConfig.productName ?? normalizedConfig.binaryName} ${primaryAsset.version}. `
+        + `The update will complete after process ${String(dependencies.getCurrentProcessId())} exits.`,
+      );
+      return 0;
     }
 
     await replaceStagedBinaryReplacements(stagedReplacements, normalizedConfig, dependencies);
@@ -493,7 +657,9 @@ export async function runUpdateCommand(
       }
     }
   } finally {
-    await cleanupStagedBinaryReplacements(stagedReplacements, dependencies);
+    if (!deferredWindowsReplacement) {
+      await cleanupStagedBinaryReplacements(stagedReplacements, dependencies);
+    }
   }
 
   return 0;

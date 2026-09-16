@@ -14,6 +14,7 @@ type MockState = {
   chmods: Array<{ path: string; mode: number }>;
   renames: Array<{ from: string; to: string }>;
   removes: string[];
+  spawns: Array<{ command: string; args: readonly string[] }>;
 };
 
 function releaseResponse(tagName: string, assetNames: string[]): Response {
@@ -35,6 +36,10 @@ function checksumResponse(assetName: string, content = "binary"): Response {
   return new Response(`${hash}  ${assetName}\n`);
 }
 
+function portablePath(path: string): string {
+  return path.replaceAll("\\", "/");
+}
+
 function createDependencies(responses: Response[], overrides: Partial<UpdaterDependencies> = {}): {
   dependencies: UpdaterDependencies;
   state: MockState;
@@ -48,6 +53,7 @@ function createDependencies(responses: Response[], overrides: Partial<UpdaterDep
     chmods: [],
     renames: [],
     removes: [],
+    spawns: [],
   };
   return {
     state,
@@ -83,6 +89,10 @@ function createDependencies(responses: Response[], overrides: Partial<UpdaterDep
         state.removes.push(path);
       },
       statFile: async () => ({ mode: 0o100755 }),
+      getCurrentProcessId: () => 1234,
+      spawnDetached: async (command, args) => {
+        state.spawns.push({ command, args });
+      },
       ...overrides,
     },
   };
@@ -124,10 +134,16 @@ describe("updater library", () => {
       `https://downloads.example/${assetName}`,
       `https://downloads.example/${assetName}.sha256`,
     ]);
-    expect(state.writes).toEqual([
+    expect(state.writes.map(({ path, content }) => ({
+      path: portablePath(path),
+      content,
+    }))).toEqual([
       { path: `/real/usr/local/bin/.link-cli-update-test/${assetName}`, content: "new-binary" },
     ]);
-    expect(state.renames).toEqual([
+    expect(state.renames.map(({ from, to }) => ({
+      from: portablePath(from),
+      to: portablePath(to),
+    }))).toEqual([
       { from: "/real/usr/local/bin/link-cli", to: "/real/usr/local/bin/.link-cli-update-test/link-cli.backup" },
       { from: `/real/usr/local/bin/.link-cli-update-test/${assetName}`, to: "/real/usr/local/bin/link-cli" },
     ]);
@@ -153,10 +169,42 @@ describe("updater library", () => {
       companionBinaries: [{ binaryName: "ralpher" }],
     }, dependencies)).resolves.toBe(0);
 
-    expect(state.renames.filter(rename => !rename.to.endsWith(".backup")).map(rename => rename.to)).toEqual([
+    expect(state.renames
+      .filter(rename => !rename.to.endsWith(".backup"))
+      .map(rename => portablePath(rename.to))).toEqual([
       "/real/usr/local/bin/ralpher",
       "/real/usr/local/bin/ralpher-cli",
     ]);
+  });
+
+  test("defers Windows replacement until the running executable exits", async () => {
+    const assetName = "link-cli-v1.2.3-windows-x64.exe";
+    const { dependencies, state } = createDependencies([
+      releaseResponse("v1.2.3", [assetName, `${assetName}.sha256`]),
+      binaryResponse("new-binary"),
+      checksumResponse(assetName, "new-binary"),
+    ], {
+      getPlatform: () => ({ platform: "win32", arch: "x64" }),
+      getExecutablePath: () => "/programs/link-cli.exe",
+    });
+
+    await expect(runUpdateCommand({ checkOnly: false }, {
+      repository: "pablozaiden/link",
+      binaryName: "link-cli",
+      currentVersion: "1.2.2",
+    }, dependencies)).resolves.toBe(0);
+
+    expect(state.chmods).toHaveLength(0);
+    expect(state.renames).toHaveLength(0);
+    expect(state.spawns).toHaveLength(1);
+    expect(state.spawns[0]?.command).toBe("powershell.exe");
+    const encodedIndex = state.spawns[0]?.args.indexOf("-EncodedCommand") ?? -1;
+    const encodedHelper = state.spawns[0]?.args[encodedIndex + 1];
+    expect(encodedHelper).toBeDefined();
+    const helper = Buffer.from(encodedHelper ?? "", "base64").toString("utf16le");
+    expect(helper).toContain("$ParentProcessId = 1234");
+    expect(helper).toContain("/real/programs/link-cli.exe");
+    expect(state.outputs.at(-1)).toContain("will complete after process 1234 exits");
   });
 
   test("rolls back companion updates when any replacement fails", async () => {
@@ -185,12 +233,18 @@ describe("updater library", () => {
       companionBinaries: [{ binaryName: "ralpher" }],
     }, dependencies)).rejects.toThrow("Failed to update ralpher-cli");
 
-    expect(state.removes).toContain("/real/usr/local/bin/ralpher");
-    expect(state.renames).toContainEqual({
+    expect(state.removes.map(portablePath)).toContain("/real/usr/local/bin/ralpher");
+    expect(state.renames.map(({ from, to }) => ({
+      from: portablePath(from),
+      to: portablePath(to),
+    }))).toContainEqual({
       from: "/real/usr/local/bin/.ralpher-cli-update-test/ralpher-cli.backup",
       to: "/real/usr/local/bin/ralpher-cli",
     });
-    expect(state.renames).toContainEqual({
+    expect(state.renames.map(({ from, to }) => ({
+      from: portablePath(from),
+      to: portablePath(to),
+    }))).toContainEqual({
       from: "/real/usr/local/bin/.ralpher-cli-update-test/ralpher.backup",
       to: "/real/usr/local/bin/ralpher",
     });

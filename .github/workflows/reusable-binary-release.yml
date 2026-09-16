@@ -45,7 +45,9 @@ on:
             {"os":"ubuntu-latest","target":"linux-x64","bun_target":"bun-linux-x64"},
             {"os":"ubuntu-latest","target":"linux-arm64","bun_target":"bun-linux-arm64"},
             {"os":"macos-latest","target":"darwin-x64","bun_target":"bun-darwin-x64"},
-            {"os":"macos-latest","target":"darwin-arm64","bun_target":"bun-darwin-arm64"}
+            {"os":"macos-latest","target":"darwin-arm64","bun_target":"bun-darwin-arm64"},
+            {"os":"windows-latest","target":"windows-x64","bun_target":"bun-windows-x64"},
+            {"os":"windows-latest","target":"windows-arm64","bun_target":"bun-windows-arm64"}
           ]
     secrets:
       macos_signing_certificate_base64:
@@ -65,6 +67,9 @@ jobs:
       fail-fast: false
       matrix:
         target: ${{ fromJson(inputs.targets) }}
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Checkout repository
@@ -80,10 +85,13 @@ jobs:
 
       - name: Update package.json version
         if: ${{ inputs.update_package_version }}
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          jq --arg v "$VERSION" '.version = $v' package.json > package.json.tmp
-          mv package.json.tmp package.json
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: >-
+          bun -e 'const path = "package.json";
+          const value = await Bun.file(path).json();
+          value.version = process.env.VERSION.replace(/^v/, "");
+          await Bun.write(path, JSON.stringify(value, null, 2) + "\n");'
 
       - name: Run prebuild command
         if: ${{ inputs.prebuild_command != '' }}
@@ -154,14 +162,19 @@ jobs:
           VERSION="${TAG#v}"
           export TAG VERSION RELEASE_TARGET BUN_TARGET
           mkdir -p dist/release-assets
-          printf '%s' "$BINARIES_JSON" > /tmp/binaries.json
+          BINARIES_PATH="$RUNNER_TEMP/binaries.json"
+          printf '%s' "$BINARIES_JSON" > "$BINARIES_PATH"
 
-          jq -c '.[]' /tmp/binaries.json | while read -r spec; do
+          jq -c '.[]' "$BINARIES_PATH" | while read -r spec; do
             BINARY_NAME="$(printf '%s' "$spec" | jq -r '.name')"
             ASSET_PREFIX="$(printf '%s' "$spec" | jq -r '.asset_prefix // .assetPrefix // .name')"
             BUILD_COMMAND="$(printf '%s' "$spec" | jq -r '.build_command // .buildCommand')"
             OUTPUT_PATH="$(printf '%s' "$spec" | jq -r '.output_path // .outputPath')"
-            ASSET_NAME="${ASSET_PREFIX}-${TAG}-${RELEASE_TARGET}"
+            ASSET_EXTENSION=""
+            if [[ "$RELEASE_TARGET" == windows-* ]]; then
+              ASSET_EXTENSION=".exe"
+            fi
+            ASSET_NAME="${ASSET_PREFIX}-${TAG}-${RELEASE_TARGET}${ASSET_EXTENSION}"
             ASSET_PATH="dist/release-assets/${ASSET_NAME}"
             export BINARY_NAME ASSET_PREFIX ASSET_NAME ASSET_PATH OUTPUT_PATH
 
@@ -185,10 +198,20 @@ jobs:
                 --timestamp=none \
                 "$RESOLVED_OUTPUT_PATH"
             fi
-            cp "$RESOLVED_OUTPUT_PATH" "$ASSET_PATH"
-            chmod +x "$ASSET_PATH"
+            if [ "$RESOLVED_OUTPUT_PATH" != "$ASSET_PATH" ]; then
+              cp "$RESOLVED_OUTPUT_PATH" "$ASSET_PATH"
+            fi
+            if [[ "$RELEASE_TARGET" != windows-* ]]; then
+              chmod +x "$ASSET_PATH"
+            fi
             if [ "$GENERATE_CHECKSUMS" = "true" ]; then
-              (cd dist/release-assets && shasum -a 256 "$ASSET_NAME" > "$ASSET_NAME.sha256")
+              ASSET_NAME="$ASSET_NAME" bun -e '
+                import { createHash } from "node:crypto";
+                const name = process.env.ASSET_NAME;
+                const payload = await Bun.file(`dist/release-assets/${name}`).arrayBuffer();
+                const hash = createHash("sha256").update(new Uint8Array(payload)).digest("hex");
+                await Bun.write(`dist/release-assets/${name}.sha256`, `${hash}  ${name}\n`);
+              '
             fi
           done
 
