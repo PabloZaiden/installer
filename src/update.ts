@@ -101,6 +101,8 @@ type StagedBinaryReplacement = {
   backupPath: string;
 };
 
+const detachedUpdateProcesses = new Set<ReturnType<typeof Bun.spawn>>();
+
 function powerShellString(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
 }
@@ -137,6 +139,7 @@ function Write-UpdateStatus([string]$Message) {
   [System.IO.File]::WriteAllText($StatusPath, $Message, $utf8)
 }
 
+Write-UpdateStatus "Update helper started."
 $deadline = [DateTime]::UtcNow.AddMinutes(5)
 
 while ($ParentProcessId -gt 0) {
@@ -239,6 +242,10 @@ function createDefaultUpdateDependencies(): UpdaterDependencies {
         stdout: "ignore",
         stderr: "ignore",
         windowsHide: true,
+      });
+      detachedUpdateProcesses.add(child);
+      void child.exited.finally(() => {
+        detachedUpdateProcesses.delete(child);
       });
       child.unref();
     },
