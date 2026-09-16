@@ -14,6 +14,7 @@ type MockState = {
   chmods: Array<{ path: string; mode: number }>;
   renames: Array<{ from: string; to: string }>;
   removes: string[];
+  spawns: Array<{ command: string; args: readonly string[] }>;
 };
 
 function releaseResponse(tagName: string, assetNames: string[]): Response {
@@ -48,6 +49,7 @@ function createDependencies(responses: Response[], overrides: Partial<UpdaterDep
     chmods: [],
     renames: [],
     removes: [],
+    spawns: [],
   };
   return {
     state,
@@ -83,6 +85,10 @@ function createDependencies(responses: Response[], overrides: Partial<UpdaterDep
         state.removes.push(path);
       },
       statFile: async () => ({ mode: 0o100755 }),
+      getCurrentProcessId: () => 1234,
+      spawnDetached: (command, args) => {
+        state.spawns.push({ command, args });
+      },
       ...overrides,
     },
   };
@@ -157,6 +163,35 @@ describe("updater library", () => {
       "/real/usr/local/bin/ralpher",
       "/real/usr/local/bin/ralpher-cli",
     ]);
+  });
+
+  test("defers Windows replacement until the running executable exits", async () => {
+    const assetName = "link-cli-v1.2.3-windows-x64.exe";
+    const { dependencies, state } = createDependencies([
+      releaseResponse("v1.2.3", [assetName, `${assetName}.sha256`]),
+      binaryResponse("new-binary"),
+      checksumResponse(assetName, "new-binary"),
+    ], {
+      getPlatform: () => ({ platform: "win32", arch: "x64" }),
+      getExecutablePath: () => "/programs/link-cli.exe",
+    });
+
+    await expect(runUpdateCommand({ checkOnly: false }, {
+      repository: "pablozaiden/link",
+      binaryName: "link-cli",
+      currentVersion: "1.2.2",
+    }, dependencies)).resolves.toBe(0);
+
+    expect(state.chmods).toHaveLength(0);
+    expect(state.renames).toHaveLength(0);
+    expect(state.spawns).toHaveLength(1);
+    expect(state.spawns[0]?.command).toBe("powershell.exe");
+    expect(state.spawns[0]?.args).toContain("-ParentProcessId");
+    expect(state.spawns[0]?.args).toContain("1234");
+    expect(state.writes.some(({ path }) => path.endsWith("apply-update.ps1"))).toBe(true);
+    const plan = state.writes.find(({ path }) => path.endsWith("update-plan.json"));
+    expect(plan?.content).toContain("/real/programs/link-cli.exe");
+    expect(state.outputs.at(-1)).toContain("will complete after process 1234 exits");
   });
 
   test("rolls back companion updates when any replacement fails", async () => {

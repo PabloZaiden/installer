@@ -4,6 +4,7 @@ import {
   compareReleaseVersions,
   normalizeReleaseTag,
   normalizeReleaseVersion,
+  releaseBinaryFileName,
   resolveReleasePlatform,
 } from "../src/contract";
 
@@ -25,7 +26,11 @@ describe("release contract", () => {
   test("resolves supported platforms and asset names", () => {
     expect(resolveReleasePlatform("linux", "amd64")).toEqual({ os: "linux", arch: "x64" });
     expect(resolveReleasePlatform("darwin", "arm64")).toEqual({ os: "darwin", arch: "arm64" });
+    expect(resolveReleasePlatform("win32", "x64")).toEqual({ os: "windows", arch: "x64" });
     expect(buildReleaseAssetName("link-cli", "1.2.3", { os: "linux", arch: "x64" })).toBe("link-cli-v1.2.3-linux-x64");
-    expect(() => resolveReleasePlatform("win32", "x64")).toThrow("Unsupported platform");
+    expect(buildReleaseAssetName("link-cli", "1.2.3", { os: "windows", arch: "arm64" })).toBe("link-cli-v1.2.3-windows-arm64.exe");
+    expect(releaseBinaryFileName("link-cli", { os: "windows", arch: "x64" })).toBe("link-cli.exe");
+    expect(releaseBinaryFileName("link-cli.exe", { os: "windows", arch: "x64" })).toBe("link-cli.exe");
+    expect(() => resolveReleasePlatform("freebsd", "x64")).toThrow("Unsupported platform");
   });
 });

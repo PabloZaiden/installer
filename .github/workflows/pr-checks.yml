@@ -27,3 +27,32 @@ jobs:
 
       - name: Test
         run: bun test
+
+  windows:
+    name: Windows Typecheck and Test
+    runs-on: windows-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run build
+
+      - name: Test portable and Windows contracts
+        run: >-
+          bun test
+          test/contract.test.ts
+          test/manifest.test.ts
+          test/update.test.ts
+          test/install-powershell.test.ts

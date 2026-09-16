@@ -11,9 +11,11 @@ export const SUPPORTED_RELEASE_TARGETS = [
   "linux-arm64",
   "darwin-x64",
   "darwin-arm64",
+  "windows-x64",
+  "windows-arm64",
 ] as const;
 
-export type ReleaseOs = "linux" | "darwin";
+export type ReleaseOs = "linux" | "darwin" | "windows";
 export type ReleaseArch = "x64" | "arm64";
 export type ReleaseTarget = `${ReleaseOs}-${ReleaseArch}`;
 
@@ -133,7 +135,11 @@ export function parseReleaseTarget(target: string): ReleasePlatform {
 }
 
 export function resolveReleasePlatform(platform: string, arch: string): ReleasePlatform {
-  const os = platform === "linux" || platform === "darwin" ? platform : undefined;
+  const os = platform === "win32"
+    ? "windows"
+    : platform === "linux" || platform === "darwin" || platform === "windows"
+      ? platform
+      : undefined;
   const normalizedArch = arch === "x64" || arch === "amd64"
     ? "x64"
     : arch === "arm64" || arch === "aarch64"
@@ -147,11 +153,18 @@ export function resolveReleasePlatform(platform: string, arch: string): ReleaseP
     };
   }
 
-  throw new Error(`Unsupported platform: ${platform}-${arch}. Supported release targets are Linux and macOS on x64 and arm64.`);
+  throw new Error(`Unsupported platform: ${platform}-${arch}. Supported release targets are Linux, macOS, and Windows on x64 and arm64.`);
 }
 
 export function buildReleaseAssetName(assetPrefix: string, tag: string, target: ReleasePlatform): string {
-  return `${assetPrefix}-${normalizeReleaseTag(tag)}-${target.os}-${target.arch}`;
+  const extension = target.os === "windows" ? ".exe" : "";
+  return `${assetPrefix}-${normalizeReleaseTag(tag)}-${target.os}-${target.arch}${extension}`;
+}
+
+export function releaseBinaryFileName(binaryName: string, target: ReleasePlatform): string {
+  return target.os === "windows" && !binaryName.toLowerCase().endsWith(".exe")
+    ? `${binaryName}.exe`
+    : binaryName;
 }
 
 export function assertGitHubRepository(value: string): GitHubRepository {

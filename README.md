@@ -23,6 +23,14 @@ Supported targets are:
 | --- | --- |
 | `linux` | `x64`, `arm64` |
 | `darwin` | `x64`, `arm64` |
+| `windows` | `x64`, `arm64` |
+
+Windows assets add the executable extension after the target:
+
+```text
+<assetPrefix>-<tag>-windows-<arch>.exe
+<assetPrefix>-<tag>-windows-<arch>.exe.sha256
+```
 
 Tags may be provided as `1.2.3` or `v1.2.3`; release assets are always resolved with the `v` tag form published by GitHub releases.
 
@@ -69,9 +77,20 @@ The target repository should publish an installer manifest at either:
 - `.github/installer.json`
 - `.installer.json`
 
+On Windows, run the PowerShell installer:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/pablozaiden/installer/main/install.ps1))) pablozaiden/link
+```
+
+It installs `<name>.exe` into `$HOME/.local/bin` by default and adds that
+directory to the user `PATH`. Pass `-NoModifyPath` to print guidance without
+changing `PATH`.
+
 The installer:
 
-1. Detects Linux/macOS and x64/arm64.
+1. Detects Linux/macOS and x64/arm64; the PowerShell entrypoint detects
+   Windows x64/arm64.
 2. Loads the target repository's manifest.
 3. Fetches the latest GitHub release.
 4. Downloads each configured binary asset.
@@ -101,7 +120,8 @@ Single-binary example:
   },
   "platforms": {
     "linux": ["x64", "arm64"],
-    "darwin": ["x64", "arm64"]
+    "darwin": ["x64", "arm64"],
+    "windows": ["x64", "arm64"]
   }
 }
 ```
@@ -217,11 +237,17 @@ The updater supports:
 - explicit version installs,
 - semver comparison including prereleases,
 - GitHub release metadata validation,
-- Linux/macOS x64/arm64 target resolution,
+- Linux/macOS/Windows x64/arm64 target resolution,
 - checksum verification before replacement,
 - source-mode rejection when running from `bun`,
 - staged temp-file replacement with executable permission preservation,
 - companion binary updates that are committed together with the primary binary and rolled back on replacement failure.
+
+Windows cannot replace a running executable. The updater stages and verifies
+the complete update, then starts a detached PowerShell helper. The helper waits
+for the current process to exit, applies all replacements as one rollback-aware
+operation, and writes `<binary>.update-error.log` beside the executable if the
+deferred operation fails.
 
 Exported helpers include:
 
@@ -310,7 +336,8 @@ jobs:
 The workflow:
 
 - runs on GitHub release publication,
-- builds `linux-x64`, `linux-arm64`, `darwin-x64`, and `darwin-arm64`,
+- builds `linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64`,
+  `windows-x64`, and `windows-arm64`,
 - exports `TAG`, `VERSION`, `RELEASE_TARGET`, `BUN_TARGET`, `BINARY_NAME`, `ASSET_PREFIX`, and `ASSET_PATH` to each build command,
 - stages release assets using the shared naming convention,
 - generates `.sha256` files by default,
