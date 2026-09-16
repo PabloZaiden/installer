@@ -36,6 +36,10 @@ function checksumResponse(assetName: string, content = "binary"): Response {
   return new Response(`${hash}  ${assetName}\n`);
 }
 
+function portablePath(path: string): string {
+  return path.replaceAll("\\", "/");
+}
+
 function createDependencies(responses: Response[], overrides: Partial<UpdaterDependencies> = {}): {
   dependencies: UpdaterDependencies;
   state: MockState;
@@ -130,10 +134,16 @@ describe("updater library", () => {
       `https://downloads.example/${assetName}`,
       `https://downloads.example/${assetName}.sha256`,
     ]);
-    expect(state.writes).toEqual([
+    expect(state.writes.map(({ path, content }) => ({
+      path: portablePath(path),
+      content,
+    }))).toEqual([
       { path: `/real/usr/local/bin/.link-cli-update-test/${assetName}`, content: "new-binary" },
     ]);
-    expect(state.renames).toEqual([
+    expect(state.renames.map(({ from, to }) => ({
+      from: portablePath(from),
+      to: portablePath(to),
+    }))).toEqual([
       { from: "/real/usr/local/bin/link-cli", to: "/real/usr/local/bin/.link-cli-update-test/link-cli.backup" },
       { from: `/real/usr/local/bin/.link-cli-update-test/${assetName}`, to: "/real/usr/local/bin/link-cli" },
     ]);
@@ -159,7 +169,9 @@ describe("updater library", () => {
       companionBinaries: [{ binaryName: "ralpher" }],
     }, dependencies)).resolves.toBe(0);
 
-    expect(state.renames.filter(rename => !rename.to.endsWith(".backup")).map(rename => rename.to)).toEqual([
+    expect(state.renames
+      .filter(rename => !rename.to.endsWith(".backup"))
+      .map(rename => portablePath(rename.to))).toEqual([
       "/real/usr/local/bin/ralpher",
       "/real/usr/local/bin/ralpher-cli",
     ]);
@@ -220,12 +232,18 @@ describe("updater library", () => {
       companionBinaries: [{ binaryName: "ralpher" }],
     }, dependencies)).rejects.toThrow("Failed to update ralpher-cli");
 
-    expect(state.removes).toContain("/real/usr/local/bin/ralpher");
-    expect(state.renames).toContainEqual({
+    expect(state.removes.map(portablePath)).toContain("/real/usr/local/bin/ralpher");
+    expect(state.renames.map(({ from, to }) => ({
+      from: portablePath(from),
+      to: portablePath(to),
+    }))).toContainEqual({
       from: "/real/usr/local/bin/.ralpher-cli-update-test/ralpher-cli.backup",
       to: "/real/usr/local/bin/ralpher-cli",
     });
-    expect(state.renames).toContainEqual({
+    expect(state.renames.map(({ from, to }) => ({
+      from: portablePath(from),
+      to: portablePath(to),
+    }))).toContainEqual({
       from: "/real/usr/local/bin/.ralpher-cli-update-test/ralpher.backup",
       to: "/real/usr/local/bin/ralpher",
     });

@@ -2,10 +2,11 @@ import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { expect, test } from "bun:test";
 import { runUpdateCommand } from "../src/update";
 
-const repositoryRoot = new URL("..", import.meta.url).pathname;
+const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 const installScript = join(repositoryRoot, "install.ps1");
 const windowsTest = process.platform === "win32" ? test : test.skip;
 
@@ -140,9 +141,13 @@ windowsTest("the updater helper replaces staged Windows executables", async () =
       if (observed === "new-binary") break;
       await Bun.sleep(50);
     }
+    const errorPath = `${targetPath}.update-error.log`;
+    if (observed !== "new-binary" && await Bun.file(errorPath).exists()) {
+      throw new Error(`Deferred updater failed: ${await Bun.file(errorPath).text()}`);
+    }
     expect(observed).toBe("new-binary");
     expect(await Bun.file(`${targetPath}.update-error.log`).exists()).toBe(false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
-});
+}, 15_000);
