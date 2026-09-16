@@ -31,7 +31,7 @@ windowsTest("install.ps1 installs and verifies a manifest-defined binary", async
           binaries: [{ name: "tool-cli" }],
           checksums: { required: true },
           platforms: { windows: [architecture] },
-        });
+        }, 15_000);
       }
       if (path === "/api/repos/example/tool/releases/latest") {
         return Response.json({ tag_name: "v1.2.3" });

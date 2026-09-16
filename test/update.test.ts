@@ -90,7 +90,7 @@ function createDependencies(responses: Response[], overrides: Partial<UpdaterDep
       },
       statFile: async () => ({ mode: 0o100755 }),
       getCurrentProcessId: () => 1234,
-      spawnDetached: (command, args) => {
+      spawnDetached: async (command, args) => {
         state.spawns.push({ command, args });
       },
       ...overrides,

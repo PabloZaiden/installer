@@ -64,7 +64,7 @@ export type UpdaterDependencies = {
   removeFile: (path: string) => Promise<void>;
   statFile: (path: string) => Promise<{ mode: number }>;
   getCurrentProcessId: () => number;
-  spawnDetached: (command: string, args: readonly string[]) => void;
+  spawnDetached: (command: string, args: readonly string[]) => Promise<void>;
 };
 
 export type GitHubReleaseAsset = {
@@ -100,8 +100,6 @@ type StagedBinaryReplacement = {
   tempPath: string;
   backupPath: string;
 };
-
-const detachedUpdateProcesses = new Set<ReturnType<typeof Bun.spawn>>();
 
 function powerShellString(value: string): string {
   return `'${value.replaceAll("'", "''")}'`;
@@ -229,19 +227,18 @@ function createDefaultUpdateDependencies(): UpdaterDependencies {
       return { mode: result.mode };
     },
     getCurrentProcessId: () => process.pid,
-    spawnDetached: (command, args) => {
-      const child = Bun.spawn([command, ...args], {
-        detached: true,
+    spawnDetached: async (command, args) => {
+      // Bun's detached children remain in its kill-on-close job object on Windows.
+      const bootstrap = Bun.spawn(["cmd.exe", "/d", "/c", "start", "", "/b", command, ...args], {
         stdin: "ignore",
         stdout: "ignore",
         stderr: "ignore",
         windowsHide: true,
       });
-      detachedUpdateProcesses.add(child);
-      void child.exited.finally(() => {
-        detachedUpdateProcesses.delete(child);
-      });
-      child.unref();
+      const exitCode = await bootstrap.exited;
+      if (exitCode !== 0) {
+        throw new Error(`Failed to launch the deferred updater (cmd.exe exited with ${String(exitCode)}).`);
+      }
     },
   };
 }
@@ -538,7 +535,7 @@ async function scheduleWindowsBinaryReplacements(
     "utf16le",
   ).toString("base64");
   await dependencies.removeFile(statusPath);
-  dependencies.spawnDetached("powershell.exe", [
+  await dependencies.spawnDetached("powershell.exe", [
     "-NoLogo",
     "-NoProfile",
     "-NonInteractive",
