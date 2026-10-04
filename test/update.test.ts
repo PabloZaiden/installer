@@ -166,16 +166,41 @@ describe("updater library", () => {
     expect(state.renames.some(rename => rename.to === "/real/usr/local/bin/link-cli")).toBe(true);
   });
 
-  test("falls back to the stable release when prereleases are not newer", async () => {
+  test("does not treat a build-tagged prerelease as newer than the installed stable release", async () => {
     const stableAsset = "link-cli-v1.2.3-linux-x64";
-    const prereleaseAsset = "link-cli-v1.2.3-rc.1-linux-x64";
     const { dependencies, state } = createDependencies([
       releaseResponse("v1.2.3", [stableAsset, `${stableAsset}.sha256`]),
       releaseListResponse([
-        { tagName: "v1.2.3-rc.1", assetNames: [prereleaseAsset] },
+        { tagName: "v1.2.3-rc.1+build.1", assetNames: ["link-cli-v1.2.3-rc.1+build.1-linux-x64"] },
       ]),
-      binaryResponse("stable-binary"),
-      checksumResponse(stableAsset, "stable-binary"),
+    ]);
+
+    await expect(runUpdateCommand({ checkOnly: false, preRelease: true }, {
+      repository: "pablozaiden/link",
+      binaryName: "link-cli",
+      currentVersion: "1.2.3",
+    }, dependencies)).resolves.toBe(0);
+
+    expect(state.writes).toHaveLength(0);
+    expect(state.renames).toHaveLength(0);
+  });
+
+  test("orders build-tagged prereleases by numeric SemVer identifiers", async () => {
+    const assetName = "link-cli-v1.2.3-rc.10+build.1-linux-x64";
+    const { dependencies, state } = createDependencies([
+      releaseResponse("v1.2.2", ["link-cli-v1.2.2-linux-x64"]),
+      releaseListResponse([
+        {
+          tagName: "v1.2.3-rc.10+build.1",
+          assetNames: [assetName, `${assetName}.sha256`],
+        },
+        {
+          tagName: "v1.2.3-rc.2+build.1",
+          assetNames: ["link-cli-v1.2.3-rc.2+build.1-linux-x64"],
+        },
+      ]),
+      binaryResponse("rc-10"),
+      checksumResponse(assetName, "rc-10"),
     ]);
 
     await expect(runUpdateCommand({ checkOnly: false, preRelease: true }, {
@@ -186,8 +211,8 @@ describe("updater library", () => {
 
     expect(state.writes).toEqual([
       {
-        path: expect.stringContaining(stableAsset),
-        content: "stable-binary",
+        path: expect.stringContaining(assetName),
+        content: "rc-10",
       },
     ]);
   });

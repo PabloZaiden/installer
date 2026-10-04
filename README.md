@@ -248,7 +248,7 @@ The updater supports:
 - latest release checks,
 - opt-in prerelease selection when a prerelease is newer than the latest stable release,
 - explicit version installs,
-- semver comparison including prereleases,
+- SemVer comparison including prereleases, with build metadata ignored for precedence,
 - GitHub release metadata validation,
 - Linux/macOS/Windows x64/arm64 target resolution,
 - checksum verification before replacement,

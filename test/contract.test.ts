@@ -21,6 +21,9 @@ describe("release contract", () => {
     expect(compareReleaseVersions("1.0.1", "1.0.0")).toBeGreaterThan(0);
     expect(compareReleaseVersions("1.0.0-beta.2", "1.0.0-beta.1")).toBeGreaterThan(0);
     expect(compareReleaseVersions("1.0.0-beta.1", "1.0.0")).toBeLessThan(0);
+    expect(compareReleaseVersions("1.0.0+build.1", "1.0.0+build.2")).toBe(0);
+    expect(compareReleaseVersions("1.0.0-beta.1+build.1", "1.0.0")).toBeLessThan(0);
+    expect(compareReleaseVersions("1.0.0-beta.10+build.2", "1.0.0-beta.2+build.1")).toBeGreaterThan(0);
   });
 
   test("resolves supported platforms and asset names", () => {
