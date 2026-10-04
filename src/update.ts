@@ -19,6 +19,7 @@ import {
 export type UpdateCommandOptions = {
   checkOnly: boolean;
   version?: string;
+  preRelease?: boolean;
 };
 
 export type UpdaterChecksumPolicy = {
@@ -75,6 +76,8 @@ export type GitHubReleaseAsset = {
 export type GitHubRelease = {
   tag_name: string;
   assets: GitHubReleaseAsset[];
+  draft?: boolean;
+  prerelease?: boolean;
 };
 
 export type ResolvedReleaseAsset = {
@@ -271,15 +274,102 @@ export function parseGitHubRelease(value: unknown): GitHubRelease {
   if (!Array.isArray(raw["assets"])) {
     throw new Error("release.assets must be an array.");
   }
+  const draft = parseOptionalBoolean(raw["draft"], "release.draft");
+  const prerelease = parseOptionalBoolean(raw["prerelease"], "release.prerelease");
   return {
     tag_name: raw["tag_name"],
     assets: raw["assets"].map(assertReleaseAsset),
+    ...(draft === undefined ? {} : { draft }),
+    ...(prerelease === undefined ? {} : { prerelease }),
   };
+}
+
+function parseOptionalBoolean(value: unknown, label: string): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "boolean") {
+    throw new Error(`${label} must be a boolean.`);
+  }
+  return value;
+}
+
+function parseGitHubReleaseList(value: unknown): GitHubRelease[] {
+  if (!Array.isArray(value)) {
+    throw new Error("releases must be an array.");
+  }
+  return value.map((entry, index) => {
+    const release = parseGitHubRelease(entry);
+    if (release.draft === undefined) {
+      throw new Error(`releases[${index}].draft must be a boolean.`);
+    }
+    if (release.prerelease === undefined) {
+      throw new Error(`releases[${index}].prerelease must be a boolean.`);
+    }
+    return release;
+  });
+}
+
+async function fetchGitHubApiResponse(
+  config: UpdaterConfig,
+  url: string,
+  dependencies: Pick<UpdaterDependencies, "fetchFn">,
+): Promise<Response> {
+  return await dependencies.fetchFn(url, {
+    headers: {
+      accept: "application/vnd.github+json",
+      "user-agent": config.userAgent ?? `${config.binaryName}-updater`,
+      "x-github-api-version": DEFAULT_GITHUB_API_VERSION,
+    },
+  });
+}
+
+async function parseGitHubApiResponse(response: Response, metadataName: string): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch (error) {
+    throw new Error(`Failed to parse ${metadataName}: ${String(error)}`);
+  }
+}
+
+function hasNextReleasePage(response: Response): boolean {
+  return response.headers.get("link")
+    ?.split(",")
+    .some(link => /;\s*rel="?next"?\s*(?:;|$)/i.test(link)) ?? false;
+}
+
+async function fetchGitHubReleases(
+  repository: GitHubRepository,
+  config: UpdaterConfig,
+  dependencies: Pick<UpdaterDependencies, "fetchFn">,
+): Promise<GitHubRelease[]> {
+  const releasesUrl = `${githubApiRepositoryUrl(repository)}/releases`;
+  const releases: GitHubRelease[] = [];
+  let page = 1;
+
+  while (true) {
+    const response = await fetchGitHubApiResponse(
+      config,
+      `${releasesUrl}?per_page=100&page=${String(page)}`,
+      dependencies,
+    );
+    if (!response.ok) {
+      throw new Error(`Failed to load prerelease metadata: GitHub returned ${String(response.status)}.`);
+    }
+    const pageReleases = parseGitHubReleaseList(
+      await parseGitHubApiResponse(response, "prerelease metadata"),
+    );
+    releases.push(...pageReleases);
+    if (!hasNextReleasePage(response)) {
+      return releases;
+    }
+    page += 1;
+  }
 }
 
 export async function fetchGitHubRelease(
   config: UpdaterConfig,
-  command: Pick<UpdateCommandOptions, "version">,
+  command: Pick<UpdateCommandOptions, "version" | "preRelease">,
   dependencies: Pick<UpdaterDependencies, "fetchFn" | "out">,
 ): Promise<GitHubRelease> {
   const repository = assertGitHubRepository(config.repository);
@@ -288,13 +378,7 @@ export async function fetchGitHubRelease(
     ? `${githubApiRepositoryUrl(repository)}/releases/tags/${tag}`
     : `${githubApiRepositoryUrl(repository)}/releases/latest`;
   dependencies.out(tag ? `Fetching release metadata for ${tag}...` : "Fetching release metadata...");
-  const response = await dependencies.fetchFn(releaseUrl, {
-    headers: {
-      accept: "application/vnd.github+json",
-      "user-agent": config.userAgent ?? `${config.binaryName}-updater`,
-      "x-github-api-version": DEFAULT_GITHUB_API_VERSION,
-    },
-  });
+  const response = await fetchGitHubApiResponse(config, releaseUrl, dependencies);
 
   if (response.status === 404 && tag) {
     throw new Error(`Release not found: ${tag}`);
@@ -303,13 +387,27 @@ export async function fetchGitHubRelease(
     throw new Error(`Failed to load release metadata: GitHub returned ${String(response.status)}.`);
   }
 
-  let rawBody: unknown;
-  try {
-    rawBody = await response.json();
-  } catch (error) {
-    throw new Error(`Failed to parse release metadata: ${String(error)}`);
+  const release = parseGitHubRelease(await parseGitHubApiResponse(response, "release metadata"));
+  if (tag || !command.preRelease) {
+    return release;
   }
-  return parseGitHubRelease(rawBody);
+
+  dependencies.out("Checking for a newer prerelease...");
+  const prereleases = (await fetchGitHubReleases(repository, config, dependencies))
+    .filter(candidate => candidate.prerelease === true && candidate.draft !== true);
+  const newestPrerelease = prereleases.reduce<GitHubRelease | undefined>(
+    (newest, candidate) => !newest || compareReleaseVersions(candidate.tag_name, newest.tag_name) > 0
+      ? candidate
+      : newest,
+    undefined,
+  );
+  if (
+    newestPrerelease
+    && compareReleaseVersions(newestPrerelease.tag_name, release.tag_name) > 0
+  ) {
+    return newestPrerelease;
+  }
+  return release;
 }
 
 export function resolveReleaseAsset(

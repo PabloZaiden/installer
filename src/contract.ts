@@ -46,7 +46,7 @@ type ParsedVersion = {
 };
 
 function parseVersion(value: string): ParsedVersion | null {
-  const parsed = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/.exec(normalizeReleaseVersion(value));
+  const parsed = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(normalizeReleaseVersion(value));
   if (!parsed) {
     return null;
   }
