@@ -184,12 +184,18 @@ Use `runUpdateCommand` from an installed binary's `update` command.
 import { runUpdateCommand } from "@pablozaiden/installer";
 import { MYPROJECT_VERSION } from "./version";
 
-export async function runCliCommand(command: { kind: string; checkOnly?: boolean; version?: string }) {
+export async function runCliCommand(command: {
+  kind: string;
+  checkOnly?: boolean;
+  version?: string;
+  preRelease?: boolean;
+}) {
   if (command.kind === "update") {
     return await runUpdateCommand(
       {
         checkOnly: command.checkOnly ?? false,
         version: command.version,
+        preRelease: command.preRelease,
       },
       {
         repository: "pablozaiden/myproject",
@@ -202,6 +208,12 @@ export async function runCliCommand(command: { kind: string; checkOnly?: boolean
   }
 }
 ```
+
+Set `preRelease: true` to consider published prereleases. The updater selects
+the prerelease with the highest semantic version only when it is newer than
+the latest stable release; otherwise, it uses the stable release. The same
+selection applies to `checkOnly`. An explicit `version` continues to install
+that exact release.
 
 For a CLI with a companion binary installed beside it:
 
@@ -234,6 +246,7 @@ await runUpdateCommand(
 The updater supports:
 
 - latest release checks,
+- opt-in prerelease selection when a prerelease is newer than the latest stable release,
 - explicit version installs,
 - semver comparison including prereleases,
 - GitHub release metadata validation,

@@ -17,14 +17,36 @@ type MockState = {
   spawns: Array<{ command: string; args: readonly string[] }>;
 };
 
-function releaseResponse(tagName: string, assetNames: string[]): Response {
+function releaseResponse(tagName: string, assetNames: string[], prerelease = false): Response {
   return Response.json({
     tag_name: tagName,
+    prerelease,
     assets: assetNames.map(name => ({
       name,
       browser_download_url: `https://downloads.example/${name}`,
     })),
   });
+}
+
+function releaseListResponse(
+  releases: Array<{ tagName: string; assetNames: string[] }>,
+  nextPage?: number,
+): Response {
+  return Response.json(releases.map(({ tagName, assetNames }) => ({
+    tag_name: tagName,
+    draft: false,
+    prerelease: true,
+    assets: assetNames.map(name => ({
+      name,
+      browser_download_url: `https://downloads.example/${name}`,
+    })),
+  })), nextPage === undefined
+    ? undefined
+    : {
+        headers: {
+          link: `<https://api.github.com/repos/pablozaiden/link/releases?per_page=100&page=${String(nextPage)}>; rel="next"`,
+        },
+      });
 }
 
 function binaryResponse(content = "binary"): Response {
@@ -112,6 +134,80 @@ describe("updater library", () => {
 
     expect(state.urls).toEqual(["https://api.github.com/repos/pablozaiden/link/releases/latest"]);
     expect(state.outputs).toContain("Update available: 0.1.0 -> 0.2.0");
+    expect(state.renames).toHaveLength(0);
+  });
+
+  test("installs the newest prerelease when it is newer than the latest stable release", async () => {
+    const assetName = "link-cli-v2.0.0-rc.1-linux-x64";
+    const { dependencies, state } = createDependencies([
+      releaseResponse("v1.2.3", ["link-cli-v1.2.3-linux-x64"]),
+      releaseListResponse([
+        { tagName: "v1.3.0-beta.1", assetNames: ["link-cli-v1.3.0-beta.1-linux-x64"] },
+      ], 2),
+      releaseListResponse([
+        { tagName: "v2.0.0-rc.1", assetNames: [assetName, `${assetName}.sha256`] },
+      ]),
+      binaryResponse("new-prerelease"),
+      checksumResponse(assetName, "new-prerelease"),
+    ]);
+
+    await expect(runUpdateCommand({ checkOnly: false, preRelease: true }, {
+      repository: "pablozaiden/link",
+      binaryName: "link-cli",
+      currentVersion: "1.2.3",
+    }, dependencies)).resolves.toBe(0);
+
+    expect(state.writes).toEqual([
+      {
+        path: expect.stringContaining(assetName),
+        content: "new-prerelease",
+      },
+    ]);
+    expect(state.renames.some(rename => rename.to === "/real/usr/local/bin/link-cli")).toBe(true);
+  });
+
+  test("falls back to the stable release when prereleases are not newer", async () => {
+    const stableAsset = "link-cli-v1.2.3-linux-x64";
+    const prereleaseAsset = "link-cli-v1.2.3-rc.1-linux-x64";
+    const { dependencies, state } = createDependencies([
+      releaseResponse("v1.2.3", [stableAsset, `${stableAsset}.sha256`]),
+      releaseListResponse([
+        { tagName: "v1.2.3-rc.1", assetNames: [prereleaseAsset] },
+      ]),
+      binaryResponse("stable-binary"),
+      checksumResponse(stableAsset, "stable-binary"),
+    ]);
+
+    await expect(runUpdateCommand({ checkOnly: false, preRelease: true }, {
+      repository: "pablozaiden/link",
+      binaryName: "link-cli",
+      currentVersion: "1.2.2",
+    }, dependencies)).resolves.toBe(0);
+
+    expect(state.writes).toEqual([
+      {
+        path: expect.stringContaining(stableAsset),
+        content: "stable-binary",
+      },
+    ]);
+  });
+
+  test("checks the selected prerelease without replacing the installed binary", async () => {
+    const { dependencies, state } = createDependencies([
+      releaseResponse("v1.2.3", ["link-cli-v1.2.3-linux-x64"]),
+      releaseListResponse([
+        { tagName: "v1.3.0-rc.1", assetNames: ["link-cli-v1.3.0-rc.1-linux-x64"] },
+      ]),
+    ]);
+
+    await expect(runUpdateCommand({ checkOnly: true, preRelease: true }, {
+      repository: "pablozaiden/link",
+      binaryName: "link-cli",
+      currentVersion: "1.2.3",
+    }, dependencies)).resolves.toBe(0);
+
+    expect(state.outputs.join("\n")).toContain("1.3.0-rc.1");
+    expect(state.writes).toHaveLength(0);
     expect(state.renames).toHaveLength(0);
   });
 
