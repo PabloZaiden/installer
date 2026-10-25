@@ -7,6 +7,7 @@ import {
   assertGitHubRepository,
   buildReleaseAssetName,
   compareReleaseVersions,
+  defaultUpdateChannel,
   githubApiRepositoryUrl,
   normalizeReleaseTag,
   normalizeReleaseVersion,
@@ -14,12 +15,14 @@ import {
   resolveReleasePlatform,
   type GitHubRepository,
   type ReleasePlatform,
+  type UpdateChannel,
 } from "./contract";
 
 export type UpdateCommandOptions = {
   checkOnly: boolean;
   version?: string;
   preRelease?: boolean;
+  channel?: UpdateChannel;
 };
 
 export type UpdaterChecksumPolicy = {
@@ -37,6 +40,7 @@ export type UpdaterConfig = {
   repository: GitHubRepository | string;
   binaryName: string;
   currentVersion: string;
+  channel?: UpdateChannel;
   productName?: string;
   assetPrefix?: string;
   checksum?: UpdaterChecksumPolicy;
@@ -78,6 +82,7 @@ export type GitHubRelease = {
   assets: GitHubReleaseAsset[];
   draft?: boolean;
   prerelease?: boolean;
+  version?: string;
 };
 
 export type ResolvedReleaseAsset = {
@@ -320,6 +325,7 @@ async function fetchGitHubApiResponse(
       accept: "application/vnd.github+json",
       "user-agent": config.userAgent ?? `${config.binaryName}-updater`,
       "x-github-api-version": DEFAULT_GITHUB_API_VERSION,
+      "cache-control": "no-cache",
     },
   });
 }
@@ -369,11 +375,20 @@ async function fetchGitHubReleases(
 
 export async function fetchGitHubRelease(
   config: UpdaterConfig,
-  command: Pick<UpdateCommandOptions, "version" | "preRelease">,
+  command: Pick<UpdateCommandOptions, "version" | "preRelease" | "channel">,
   dependencies: Pick<UpdaterDependencies, "fetchFn" | "out">,
 ): Promise<GitHubRelease> {
   const repository = assertGitHubRepository(config.repository);
-  const tag = command.version ? normalizeReleaseTag(command.version) : undefined;
+  const channel = command.channel ?? config.channel ?? defaultUpdateChannel(config.currentVersion);
+  if (channel !== "latest" && channel !== "stable") {
+    throw new Error("Update channel must be stable or latest.");
+  }
+  if (command.channel && (command.version || command.preRelease)) {
+    throw new Error("Cannot combine an update channel with version or preRelease.");
+  }
+  const tag = command.version
+    ? normalizeReleaseTag(command.version)
+    : channel === "latest" && !command.preRelease ? "latest" : undefined;
   const releaseUrl = tag
     ? `${githubApiRepositoryUrl(repository)}/releases/tags/${tag}`
     : `${githubApiRepositoryUrl(repository)}/releases/latest`;
@@ -388,13 +403,16 @@ export async function fetchGitHubRelease(
   }
 
   const release = parseGitHubRelease(await parseGitHubApiResponse(response, "release metadata"));
+  if (release.tag_name === "latest") {
+    return await resolveRollingRelease(release, dependencies);
+  }
   if (tag || !command.preRelease) {
     return release;
   }
 
   dependencies.out("Checking for a newer prerelease...");
   const prereleases = (await fetchGitHubReleases(repository, config, dependencies))
-    .filter(candidate => candidate.prerelease === true && candidate.draft !== true);
+    .filter(candidate => candidate.prerelease === true && candidate.draft !== true && candidate.tag_name !== "latest");
   const newestPrerelease = prereleases.reduce<GitHubRelease | undefined>(
     (newest, candidate) => !newest || compareReleaseVersions(candidate.tag_name, newest.tag_name) > 0
       ? candidate
@@ -410,6 +428,37 @@ export async function fetchGitHubRelease(
   return release;
 }
 
+async function resolveRollingRelease(
+  release: GitHubRelease,
+  dependencies: Pick<UpdaterDependencies, "fetchFn">,
+): Promise<GitHubRelease> {
+  const asset = release.assets.find(candidate => candidate.name === "release.json");
+  if (!asset) throw new Error("The latest release does not include release.json.");
+  const response = await dependencies.fetchFn(asset.browser_download_url, {
+    headers: { "cache-control": "no-cache" },
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to load latest build metadata: HTTP ${String(response.status)}.`);
+  }
+  const value = await parseGitHubApiResponse(response, "latest build metadata");
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("Invalid latest build metadata.");
+  }
+  const metadata = value as Record<string, unknown>;
+  if (
+    metadata["schemaVersion"] !== 1
+    || metadata["channel"] !== "latest"
+    || typeof metadata["version"] !== "string"
+    || !/^\d+\.\d+\.\d+-main-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-[a-f0-9]{7}$/.test(metadata["version"])
+    || typeof metadata["revision"] !== "string"
+    || !/^[a-f0-9]{40}$/.test(metadata["revision"])
+    || !metadata["revision"].startsWith(metadata["version"].slice(-7))
+  ) {
+    throw new Error("Invalid latest build version or revision.");
+  }
+  return { ...release, version: metadata["version"] };
+}
+
 export function resolveReleaseAsset(
   release: GitHubRelease,
   target: ReleasePlatform,
@@ -417,7 +466,8 @@ export function resolveReleaseAsset(
 ): ResolvedReleaseAsset {
   const assetPrefix = config.assetPrefix ?? config.binaryName;
   const checksumExtension = config.checksum?.extension ?? DEFAULT_CHECKSUM_EXTENSION;
-  const assetName = buildReleaseAssetName(assetPrefix, release.tag_name, target);
+  const version = release.version ?? normalizeReleaseVersion(release.tag_name);
+  const assetName = buildReleaseAssetName(assetPrefix, version, target);
   const checksumAssetName = `${assetName}${checksumExtension}`;
   const asset = release.assets.find(entry => entry.name === assetName);
   if (!asset) {
@@ -427,7 +477,7 @@ export function resolveReleaseAsset(
 
   return {
     binaryName: config.binaryName,
-    version: normalizeReleaseVersion(release.tag_name),
+    version,
     assetName,
     downloadUrl: asset.browser_download_url,
     checksumAssetName,
@@ -705,12 +755,12 @@ export async function runUpdateCommand(
     return 0;
   }
 
-  if (!command.version && compareReleaseVersions(currentVersion, primaryAsset.version) >= 0) {
+  if (!command.version && !command.channel && compareReleaseVersions(currentVersion, primaryAsset.version) >= 0) {
     dependencies.out(formatCheckMessage(normalizedConfig.binaryName, currentVersion, primaryAsset.version));
     return 0;
   }
 
-  if (command.version && compareReleaseVersions(currentVersion, primaryAsset.version) === 0) {
+  if ((command.version || command.channel) && compareReleaseVersions(currentVersion, primaryAsset.version) === 0) {
     dependencies.out(`${normalizedConfig.binaryName} ${currentVersion} is already installed.`);
     return 0;
   }

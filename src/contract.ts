@@ -25,6 +25,11 @@ export type ReleasePlatform = {
 };
 
 export type GitHubRepository = `${string}/${string}`;
+export type UpdateChannel = "stable" | "latest";
+
+export function defaultUpdateChannel(version: string): UpdateChannel {
+  return /-main-/.test(version) ? "latest" : "stable";
+}
 
 export function normalizeReleaseVersion(rawValue: string): string {
   const trimmed = rawValue.trim();
@@ -35,6 +40,7 @@ export function normalizeReleaseVersion(rawValue: string): string {
 }
 
 export function normalizeReleaseTag(rawValue: string): string {
+  if (rawValue.trim() === "latest") return "latest";
   return `v${normalizeReleaseVersion(rawValue)}`;
 }
 

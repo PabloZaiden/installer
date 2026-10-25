@@ -14,6 +14,7 @@ Usage:
 
 Options:
   --ref <ref>                  Repository ref to read manifests from (default: main)
+  --channel stable|latest      Release channel (default: stable)
   --binary <name>              Binary name to install when no manifest is available
   --asset-prefix <prefix>      Asset prefix for the most recent --binary
   --install-dir <dir>          Install directory (default: $HOME/.local/bin)
@@ -218,7 +219,7 @@ install_binary() {
   binary_name=$8
   asset_prefix=$9
 
-  asset_name="$asset_prefix-$tag-$os-$arch"
+  asset_name="$asset_prefix-${ASSET_TAG:-$tag}-$os-$arch"
   download_url="${GITHUB_RELEASE_BASE_URL:-https://github.com}/$repository/releases/download/$tag/$asset_name"
   temp_file=$(make_temp_file "$binary_name")
   checksum_file=$(make_temp_file "$binary_name-checksum")
@@ -253,6 +254,8 @@ install_binary() {
 
 REPOSITORY=
 REF=$DEFAULT_REF
+CHANNEL=stable
+ASSET_TAG=
 INSTALL_DIR=$DEFAULT_INSTALL_DIR
 CHECKSUM_POLICY=required
 CHECKSUM_OPTION_SET=false
@@ -269,6 +272,14 @@ while [ $# -gt 0 ]; do
     --ref)
       [ $# -gt 1 ] || error "--ref requires a value."
       REF=$2
+      shift 2
+      ;;
+    --channel)
+      [ $# -gt 1 ] || error "--channel requires a value."
+      case "$2" in
+        stable|latest) CHANNEL=$2 ;;
+        *) error "--channel must be stable or latest." ;;
+      esac
       shift 2
       ;;
     --binary)
@@ -367,8 +378,22 @@ fi
 INSTALL_DIR=$(expand_install_dir "$INSTALL_DIR")
 mkdir -p "$INSTALL_DIR"
 
-echo "Fetching latest release..."
-LATEST_TAG=$(latest_release_tag "$REPOSITORY")
+echo "Fetching $CHANNEL release..."
+if [ "$CHANNEL" = "latest" ]; then
+  LATEST_TAG=latest
+  build_metadata=$(curl -fsSL "${GITHUB_RELEASE_BASE_URL:-https://github.com}/$REPOSITORY/releases/download/latest/release.json")
+  build_version=$(printf "%s\n" "$build_metadata" | json_string_value version)
+  case "$build_version" in
+    ''|*[!0-9A-Za-z.+-]*) error "Invalid latest build version." ;;
+  esac
+  case "$build_version" in
+    [0-9]*.[0-9]*.[0-9]*-main-*) ;;
+    *) error "Invalid latest build version." ;;
+  esac
+  ASSET_TAG="v$build_version"
+else
+  LATEST_TAG=$(latest_release_tag "$REPOSITORY")
+fi
 [ -n "$LATEST_TAG" ] || error "Could not determine latest release version."
 echo "Latest version: $LATEST_TAG"
 
