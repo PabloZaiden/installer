@@ -272,6 +272,7 @@ jobs:
     concurrency:
       group: binary-release-${{ github.repository }}-${{ inputs.release_channel }}
       cancel-in-progress: false
+      queue: max
     permissions:
       contents: write
 

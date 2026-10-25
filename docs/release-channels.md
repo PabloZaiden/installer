@@ -24,8 +24,9 @@ the existing build-version action with Docker builds. Do not disable
 `update_package_version` for rolling builds: the embedded identity determines
 their default update channel.
 
-After all targets succeed, publication is serialized per channel. Superseded
-main commits are skipped. The single prerelease tagged `latest` is never
+After all targets succeed, publication is serialized per channel with
+`queue: max` so later completions do not replace pending publishers.
+Superseded main commits are skipped. The single prerelease tagged `latest` is never
 marked as GitHub's latest stable release. Its uniquely versioned binaries and
 checksums are uploaded first, followed by `release.json`:
 
