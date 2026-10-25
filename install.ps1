@@ -3,6 +3,8 @@ param(
   [Parameter(Position = 0)]
   [string]$Repository,
   [string]$Ref = "main",
+  [ValidateSet("stable", "latest")]
+  [string]$Channel = "stable",
   [string[]]$Binary = @(),
   [string[]]$AssetPrefix = @(),
   [string]$InstallDir,
@@ -28,6 +30,7 @@ Usage:
 
 Options:
   -Ref <ref>                  Repository ref used to read manifests (default: main)
+  -Channel stable|latest      Release channel (default: stable)
   -Binary <name[]>            Binary names when no manifest is available
   -AssetPrefix <prefix[]>     Asset prefixes corresponding to -Binary values
   -InstallDir <dir>           Install directory (default: `$HOME/.local/bin)
@@ -206,6 +209,7 @@ function Install-Binary {
     [string]$TargetRepository,
     [Parameter(Mandatory = $true)]
     [string]$Tag,
+    [string]$AssetTag,
     [Parameter(Mandatory = $true)]
     [string]$Architecture,
     [Parameter(Mandatory = $true)]
@@ -227,7 +231,8 @@ function Install-Binary {
   }
   $requiredProperty = $BinaryDefinition.PSObject.Properties["required"]
   $required = $null -eq $requiredProperty -or [bool]$requiredProperty.Value
-  $assetName = "$assetPrefix-$Tag-windows-$Architecture.exe"
+  if ([string]::IsNullOrWhiteSpace($AssetTag)) { $AssetTag = $Tag }
+  $assetName = "$assetPrefix-$AssetTag-windows-$Architecture.exe"
   $releaseBaseUrl = if ($env:GITHUB_RELEASE_BASE_URL) {
     $env:GITHUB_RELEASE_BASE_URL.TrimEnd("/")
   } else {
@@ -415,18 +420,34 @@ $apiBaseUrl = if ($env:GITHUB_API_BASE_URL) {
 } else {
   "https://api.github.com"
 }
-[Console]::WriteLine("Fetching latest release...")
-$release = Invoke-JsonRequest "$apiBaseUrl/repos/$Repository/releases/latest"
+[Console]::WriteLine("Fetching $Channel release...")
+$releasePath = if ($Channel -eq "latest") { "tags/latest" } else { "latest" }
+$release = Invoke-JsonRequest "$apiBaseUrl/repos/$Repository/releases/$releasePath"
 $tag = [string]$release.tag_name
 if ([string]::IsNullOrWhiteSpace($tag)) {
   Fail "Could not determine latest release version."
 }
 [Console]::WriteLine("Latest version: $tag")
+$assetTag = $tag
+if ($Channel -eq "latest") {
+  $releaseBaseUrl = if ($env:GITHUB_RELEASE_BASE_URL) {
+    $env:GITHUB_RELEASE_BASE_URL.TrimEnd("/")
+  } else {
+    "https://github.com"
+  }
+  $metadata = Invoke-RawJsonRequest "$releaseBaseUrl/$Repository/releases/download/latest/release.json"
+  $version = [string]$metadata.version
+  if ($version -notmatch '^\d+\.\d+\.\d+-main-\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-[a-f0-9]{7}$') {
+    Fail "Invalid latest build version."
+  }
+  $assetTag = "v$version"
+}
 
 foreach ($binaryDefinition in $binaries) {
   $installed = Install-Binary `
     -TargetRepository $Repository `
     -Tag $tag `
+    -AssetTag $assetTag `
     -Architecture $architecture `
     -TargetInstallDir $InstallDir `
     -ChecksumPolicy $checksumPolicy `

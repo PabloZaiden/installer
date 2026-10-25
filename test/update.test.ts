@@ -121,6 +121,49 @@ function createDependencies(responses: Response[], overrides: Partial<UpdaterDep
 }
 
 describe("updater library", () => {
+  test("follows successive latest builds and supports an explicit return to stable", async () => {
+    const revision = "abcdef1234567890123456789012345678901234";
+    const oldVersion = "1.2.4-main-2026-10-25-18-01-fedcba9";
+    const version = "1.2.4-main-2026-10-25-18-01-abcdef1";
+    const assetName = `link-cli-v${version}-linux-x64`;
+    const latestResponses = () => [
+      releaseResponse("latest", [assetName, `${assetName}.sha256`, "release.json"], true),
+      Response.json({ schemaVersion: 1, channel: "latest", version, revision }),
+    ];
+    const update = createDependencies([
+      ...latestResponses(),
+      binaryResponse("latest-binary"),
+      checksumResponse(assetName, "latest-binary"),
+    ]);
+    const config = {
+      repository: "pablozaiden/link",
+      binaryName: "link-cli",
+      currentVersion: oldVersion,
+    };
+    expect(await runUpdateCommand({ checkOnly: false }, config, update.dependencies)).toBe(0);
+    expect(update.state.urls[0]).toBe("https://api.github.com/repos/pablozaiden/link/releases/tags/latest");
+    expect(update.state.writes[0]?.content).toBe("latest-binary");
+
+    const current = createDependencies(latestResponses());
+    expect(await runUpdateCommand({ checkOnly: true }, {
+      ...config, currentVersion: version,
+    }, current.dependencies)).toBe(0);
+    expect(current.state.outputs).toContain(`link-cli ${version} is up to date.`);
+    expect(current.state.writes).toHaveLength(0);
+
+    const stableAsset = "link-cli-v1.2.3-linux-x64";
+    const stable = createDependencies([
+      releaseResponse("v1.2.3", [stableAsset, `${stableAsset}.sha256`]),
+      binaryResponse("stable-binary"),
+      checksumResponse(stableAsset, "stable-binary"),
+    ]);
+    expect(await runUpdateCommand({ checkOnly: false, channel: "stable" }, {
+      ...config, currentVersion: version,
+    }, stable.dependencies)).toBe(0);
+    expect(stable.state.urls[0]).toBe("https://api.github.com/repos/pablozaiden/link/releases/latest");
+    expect(stable.state.writes[0]?.content).toBe("stable-binary");
+  });
+
   test("checks for updates without replacing the binary", async () => {
     const { dependencies, state } = createDependencies([
       releaseResponse("v0.2.0", ["link-cli-v0.2.0-linux-x64"]),

@@ -3,6 +3,11 @@ name: Reusable Binary Release
 on:
   workflow_call:
     inputs:
+      release_channel:
+        description: "stable publishes a versioned release; latest replaces the rolling main release."
+        required: false
+        type: string
+        default: stable
       binaries:
         description: >-
           JSON array of binary specs. Each item supports name, optional asset_prefix,
@@ -58,7 +63,34 @@ on:
         required: false
 
 jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release_tag: ${{ steps.channel.outputs.release_tag }}
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+      - name: Validate release channel
+        id: channel
+        env:
+          CHANNEL: ${{ inputs.release_channel }}
+        run: |
+          case "$CHANNEL" in
+            stable) echo "release_tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT" ;;
+            latest) echo "release_tag=latest" >> "$GITHUB_OUTPUT" ;;
+            *) echo "release_channel must be stable or latest." >&2; exit 1 ;;
+          esac
+      - name: Resolve build version
+        id: version
+        uses: pablozaiden/installer/.github/actions/resolve-version@b47bdc7e7721c12c9b6b8e5e0a97c045bf526a9b
+        with:
+          mode: ${{ inputs.release_channel == 'latest' && 'main' || 'release' }}
+          github_token: ${{ github.token }}
+
   build-binaries:
+    needs: metadata
     name: Build ${{ matrix.target.target }}
     runs-on: ${{ matrix.target.os }}
     permissions:
@@ -86,7 +118,7 @@ jobs:
       - name: Update package.json version
         if: ${{ inputs.update_package_version }}
         env:
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ needs.metadata.outputs.version }}
         run: >-
           bun -e 'const path = "package.json";
           const value = await Bun.file(path).json();
@@ -152,14 +184,13 @@ jobs:
       - name: Build and stage release assets
         env:
           BINARIES_JSON: ${{ inputs.binaries }}
-          TAG: ${{ github.ref_name }}
-          VERSION: ${{ github.ref_name }}
+          TAG: v${{ needs.metadata.outputs.version }}
+          VERSION: ${{ needs.metadata.outputs.version }}
           RELEASE_TARGET: ${{ matrix.target.target }}
           BUN_TARGET: ${{ matrix.target.bun_target }}
           GENERATE_CHECKSUMS: ${{ inputs.generate_checksums }}
         run: |
           set -euo pipefail
-          VERSION="${TAG#v}"
           export TAG VERSION RELEASE_TARGET BUN_TARGET
           mkdir -p dist/release-assets
           BINARIES_PATH="$RUNNER_TEMP/binaries.json"
@@ -221,6 +252,7 @@ jobs:
           name: release-assets-${{ matrix.target.target }}
           path: dist/release-assets/*
           if-no-files-found: error
+          retention-days: 1
 
       - name: Remove macOS signing keychain
         if: ${{ always() && startsWith(matrix.target.target, 'darwin-') }}
@@ -236,11 +268,17 @@ jobs:
   publish-release-assets:
     name: Publish release assets
     runs-on: ubuntu-latest
-    needs: build-binaries
+    needs: [metadata, build-binaries]
+    concurrency:
+      group: binary-release-${{ github.repository }}-${{ inputs.release_channel }}
+      cancel-in-progress: false
+      queue: max
     permissions:
       contents: write
 
     steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+
       - name: Download release asset artifacts
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
@@ -248,8 +286,45 @@ jobs:
           path: dist/release-assets
           merge-multiple: true
 
-      - name: Upload assets to release
+      - name: Publish release assets
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: gh release upload "${{ github.ref_name }}" dist/release-assets/* --clobber --repo "$GH_REPO"
+          CHANNEL: ${{ inputs.release_channel }}
+          TAG: ${{ needs.metadata.outputs.release_tag }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$CHANNEL" = "latest" ]; then
+            DEFAULT_BRANCH="$(gh api "repos/$GH_REPO" --jq '.default_branch')"
+            HEAD_SHA="$(gh api "repos/$GH_REPO/commits/$DEFAULT_BRANCH" --jq '.sha')"
+            if [ "$HEAD_SHA" != "$GITHUB_SHA" ]; then
+              echo "::notice::Skipping superseded main build $GITHUB_SHA."
+              exit 0
+            fi
+            RELEASE_ID="$(gh api "repos/$GH_REPO/releases" --paginate --jq '.[] | select(.tag_name == "latest") | .id')"
+            if [ -z "$RELEASE_ID" ]; then
+              gh release create latest --target "$GITHUB_SHA" --title latest \
+                --notes "Rolling main build $VERSION ($GITHUB_SHA)." --prerelease --latest=false
+            fi
+          fi
+
+          gh release upload "$TAG" dist/release-assets/* --clobber --repo "$GH_REPO"
+
+          if [ "$CHANNEL" = "latest" ]; then
+            jq -n --arg version "$VERSION" --arg revision "$GITHUB_SHA" \
+              '{schemaVersion: 1, channel: "latest", version: $version, revision: $revision}' \
+              > dist/release-assets/release.json
+            # Switch readers only after every uniquely named binary and checksum exists.
+            gh release upload latest dist/release-assets/release.json --clobber --repo "$GH_REPO"
+            gh api "repos/$GH_REPO/git/refs/tags/latest" --method PATCH \
+              -f sha="$GITHUB_SHA" -F force=true > /dev/null
+            gh release edit latest --title latest --prerelease --latest=false \
+              --notes "Rolling main build $VERSION ($GITHUB_SHA)."
+            gh api "repos/$GH_REPO/releases/tags/latest" \
+              --jq ".assets[] | select(.name != \"release.json\" and (.name | contains(\"-v$VERSION-\")) == false) | .id" \
+              | while read -r asset_id; do
+                gh api "repos/$GH_REPO/releases/assets/$asset_id" --method DELETE
+              done
+          fi

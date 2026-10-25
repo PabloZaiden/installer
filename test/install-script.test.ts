@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const repositoryRoot = new URL("..", import.meta.url).pathname;
@@ -12,6 +12,36 @@ const currentTarget = `${currentOs}-${currentArch}`;
 const unsupportedOs = currentOs === "darwin" ? "linux" : "darwin";
 
 describe("install.sh", () => {
+  test("installs an opt-in latest build with verified checksums", async () => {
+    const tempDir = (await Bun.$`mktemp -d`.text()).trim();
+    try {
+      const rawRoot = join(tempDir, "raw");
+      const releaseRoot = join(tempDir, "release");
+      const installDir = join(tempDir, "bin");
+      const repo = "example/tool";
+      const version = "1.2.4-main-2026-10-25-18-01-abcdef1";
+      const releaseDir = join(releaseRoot, repo, "releases", "download", "latest");
+      const assetName = `tool-cli-v${version}-${currentTarget}`;
+      await mkdir(join(rawRoot, repo, "main", ".github"), { recursive: true });
+      await mkdir(releaseDir, { recursive: true });
+      await writeFile(join(rawRoot, repo, "main", ".github", "installer.json"), JSON.stringify({
+        schemaVersion: 1, binaries: [{ name: "tool-cli" }], checksums: { required: true },
+      }));
+      await writeFile(join(releaseDir, "release.json"), JSON.stringify({
+        schemaVersion: 1, channel: "latest", version,
+        revision: "abcdef1234567890123456789012345678901234",
+      }));
+      await writeFile(join(releaseDir, assetName), "latest-binary");
+      await writeFile(join(releaseDir, `${assetName}.sha256`),
+        `${createHash("sha256").update("latest-binary").digest("hex")}  ${assetName}\n`);
+      const result = await Bun.$`RAW_BASE_URL=${`file://${rawRoot}`} GITHUB_RELEASE_BASE_URL=${`file://${releaseRoot}`} sh ${installScript} ${repo} --channel latest --install-dir ${installDir}`.quiet();
+      expect(result.exitCode).toBe(0);
+      expect(await Bun.file(join(installDir, "tool-cli")).text()).toBe("latest-binary");
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   test("installs a manifest-defined binary from a local release fixture", async () => {
     const tempDir = await Bun.$`mktemp -d`.text().then(value => value.trim());
     const rawRoot = join(tempDir, "raw");

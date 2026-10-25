@@ -5,7 +5,7 @@ Reusable installer, updater, and release tooling for GitHub-hosted Bun binaries.
 ## Install this package
 
 ```bash
-bun add @pablozaiden/installer
+bun add github:PabloZaiden/installer#<commit-or-tag>
 ```
 
 ## Binary asset contract
@@ -32,7 +32,9 @@ Windows assets add the executable extension after the target:
 <assetPrefix>-<tag>-windows-<arch>.exe.sha256
 ```
 
-Tags may be provided as `1.2.3` or `v1.2.3`; release assets are always resolved with the `v` tag form published by GitHub releases.
+Versions may be provided as `1.2.3` or `v1.2.3`; asset names use the `v` form.
+The rolling `latest` release uses the embedded build version for asset names,
+not its fixed release tag. See [release channels](docs/release-channels.md).
 
 ## Reusable build version action
 
@@ -356,21 +358,11 @@ The workflow:
 - generates `.sha256` files by default,
 - uploads matrix artifacts first, then publishes GitHub release assets only after all matrix builds succeed.
 
-## Publishing this package to npm
+## Distributing this package
 
-This repository includes `.github/workflows/release-npm-package.yml`.
-
-On a published GitHub release, it:
-
-1. Derives the npm version from the release tag.
-2. Updates `package.json`.
-3. Verifies the version.
-4. Runs `bun install --frozen-lockfile`.
-5. Runs `bun run build`.
-6. Runs `bun test`.
-7. Publishes `@pablozaiden/installer` with npm provenance.
-
-Manual `workflow_dispatch` publishes with the `unstable` tag.
+Install directly from GitHub using a commit SHA or release tag. This package
+is not published to npm. Commit references are supported for development and
+final integrations; publishing an intermediate release is not required.
 
 ## Development
 
