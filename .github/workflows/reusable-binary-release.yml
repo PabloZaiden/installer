@@ -252,6 +252,7 @@ jobs:
           name: release-assets-${{ matrix.target.target }}
           path: dist/release-assets/*
           if-no-files-found: error
+          retention-days: 1
 
       - name: Remove macOS signing keychain
         if: ${{ always() && startsWith(matrix.target.target, 'darwin-') }}

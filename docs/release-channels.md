@@ -40,6 +40,8 @@ checksums are uploaded first, followed by `release.json`:
 
 Readers resolve that build version, rather than comparing the literal tag
 `latest`. Old rolling assets are removed after the metadata switches.
+Workflow artifacts used to transfer binaries between jobs expire after one
+day; GitHub releases remain the distribution boundary.
 Downloads already in flight may fail safely during replacement and can be
 rerun; checksum verification must remain enabled. Versioned releases are not
 deleted. This adds no unattended background updates or process restarts.
