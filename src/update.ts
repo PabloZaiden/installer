@@ -485,8 +485,13 @@ export function resolveReleaseAsset(
   };
 }
 
-function formatCheckMessage(binaryName: string, currentVersion: string, targetVersion: string): string {
-  const comparison = compareReleaseVersions(currentVersion, targetVersion);
+function formatCheckMessage(input: {
+  binaryName: string;
+  currentVersion: string;
+  targetVersion: string;
+  comparison: number;
+}): string {
+  const { binaryName, currentVersion, targetVersion, comparison } = input;
   if (comparison === 0) {
     return `${binaryName} ${currentVersion} is up to date.`;
   }
@@ -749,18 +754,28 @@ export async function runUpdateCommand(
     assetPrefix: normalizedConfig.assetPrefix,
     checksum: checksumPolicy,
   });
+  const rolling = release.tag_name === "latest";
+  const comparison = rolling
+    ? currentVersion === primaryAsset.version ? 0 : -1
+    : compareReleaseVersions(currentVersion, primaryAsset.version);
+  const checkMessage = formatCheckMessage({
+    binaryName: normalizedConfig.binaryName,
+    currentVersion,
+    targetVersion: primaryAsset.version,
+    comparison,
+  });
 
   if (command.checkOnly) {
-    dependencies.out(formatCheckMessage(normalizedConfig.binaryName, currentVersion, primaryAsset.version));
+    dependencies.out(checkMessage);
     return 0;
   }
 
-  if (!command.version && !command.channel && compareReleaseVersions(currentVersion, primaryAsset.version) >= 0) {
-    dependencies.out(formatCheckMessage(normalizedConfig.binaryName, currentVersion, primaryAsset.version));
+  if (!command.version && !command.channel && comparison >= 0) {
+    dependencies.out(checkMessage);
     return 0;
   }
 
-  if ((command.version || command.channel) && compareReleaseVersions(currentVersion, primaryAsset.version) === 0) {
+  if ((command.version || command.channel) && comparison === 0) {
     dependencies.out(`${normalizedConfig.binaryName} ${currentVersion} is already installed.`);
     return 0;
   }

@@ -383,13 +383,9 @@ if [ "$CHANNEL" = "latest" ]; then
   LATEST_TAG=latest
   build_metadata=$(curl -fsSL "${GITHUB_RELEASE_BASE_URL:-https://github.com}/$REPOSITORY/releases/download/latest/release.json")
   build_version=$(printf "%s\n" "$build_metadata" | json_string_value version)
-  case "$build_version" in
-    ''|*[!0-9A-Za-z.+-]*) error "Invalid latest build version." ;;
-  esac
-  case "$build_version" in
-    [0-9]*.[0-9]*.[0-9]*-main-*) ;;
-    *) error "Invalid latest build version." ;;
-  esac
+  printf "%s\n" "$build_version" \
+    | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+-main-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]{2}-[a-f0-9]{7}$' \
+    || error "Invalid latest build version."
   ASSET_TAG="v$build_version"
 else
   LATEST_TAG=$(latest_release_tag "$REPOSITORY")

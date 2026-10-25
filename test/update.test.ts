@@ -123,7 +123,7 @@ function createDependencies(responses: Response[], overrides: Partial<UpdaterDep
 describe("updater library", () => {
   test("follows successive latest builds and supports an explicit return to stable", async () => {
     const revision = "abcdef1234567890123456789012345678901234";
-    const oldVersion = "1.2.4-main-2026-10-25-18-00-1234567";
+    const oldVersion = "1.2.4-main-2026-10-25-18-01-fedcba9";
     const version = "1.2.4-main-2026-10-25-18-01-abcdef1";
     const assetName = `link-cli-v${version}-linux-x64`;
     const latestResponses = () => [
