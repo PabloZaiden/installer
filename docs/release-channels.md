@@ -1,8 +1,7 @@
 # Release channels
 
 New installations default to the latest **stable** GitHub release. Opt in to
-the rolling main build with `install.sh owner/repo --channel latest`, or
-`install.ps1 owner/repo -Channel latest` on Windows.
+the rolling main build with `install.sh owner/repo --channel latest`.
 
 Applications using the updater expose `update --channel latest` and
 `update --channel stable` to change channels. Plain `update` and `update --check`
@@ -22,16 +21,14 @@ application package version before building, and retains signing/checksums.
 Targets sharing the same `os` runner label are compiled sequentially in one
 job. Checkout, dependency installation, package-version update and
 `prebuild_command` run once per runner, not once per target. The default targets
-use one `ubuntu-latest` job for Linux/Windows x64 and arm64 and one
+use one `ubuntu-latest` job for Linux x64 and arm64 and one
 `macos-latest` job for Darwin x64 and arm64. The macOS default runner is ARM64;
 cross-compilation produces the x64 binary on that same host. Custom target
 lists keep the existing `{os, target, bun_target}` format; `os` identifies the
 execution host, not necessarily the binary's target OS.
 
 Each target build receives its own `RELEASE_TARGET` and `BUN_TARGET`.
-`ASSET_EXTENSION` is `.exe` for Windows and empty for other targets. Include it
-in `output_path` when Bun appends the executable extension, for example
-`dist/myproject-$RELEASE_TARGET$ASSET_EXTENSION`, or compile directly to
+Use `dist/myproject-$RELEASE_TARGET` in `output_path`, or compile directly to
 `$ASSET_PATH`. Release
 assets are staged under the runner's temporary directory so later target
 builds can clean their output directories without deleting earlier assets.
