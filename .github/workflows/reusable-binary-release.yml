@@ -12,7 +12,7 @@ on:
         description: >-
           JSON array of binary specs. Each item supports name, optional asset_prefix,
           build_command, and output_path. The workflow exposes TAG, VERSION,
-          RELEASE_TARGET, BUN_TARGET, BINARY_NAME, ASSET_PREFIX, and ASSET_PATH
+          RELEASE_TARGET, BUN_TARGET, BINARY_NAME, ASSET_PREFIX, ASSET_EXTENSION, and ASSET_PATH
           to build_command.
         required: true
         type: string
@@ -22,7 +22,7 @@ on:
         type: string
         default: bun install --frozen-lockfile
       prebuild_command:
-        description: Optional command to run before each target's binary builds.
+        description: Optional command to run once per runner before its targets' binary builds.
         required: false
         type: string
         default: ""
@@ -42,7 +42,7 @@ on:
         type: boolean
         default: true
       targets:
-        description: JSON target matrix. Defaults to Linux/macOS x64/arm64.
+        description: JSON targets grouped by os runner. Defaults to Linux/Windows on Ubuntu and Darwin on macOS, each x64/arm64.
         required: false
         type: string
         default: >-
@@ -51,8 +51,8 @@ on:
             {"os":"ubuntu-latest","target":"linux-arm64","bun_target":"bun-linux-arm64"},
             {"os":"macos-latest","target":"darwin-x64","bun_target":"bun-darwin-x64"},
             {"os":"macos-latest","target":"darwin-arm64","bun_target":"bun-darwin-arm64"},
-            {"os":"windows-latest","target":"windows-x64","bun_target":"bun-windows-x64"},
-            {"os":"windows-latest","target":"windows-arm64","bun_target":"bun-windows-arm64"}
+            {"os":"ubuntu-latest","target":"windows-x64","bun_target":"bun-windows-x64"},
+            {"os":"ubuntu-latest","target":"windows-arm64","bun_target":"bun-windows-arm64"}
           ]
     secrets:
       macos_signing_certificate_base64:
@@ -70,6 +70,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       release_tag: ${{ steps.channel.outputs.release_tag }}
+      build_groups: ${{ steps.build_groups.outputs.groups }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - name: Validate release channel
@@ -82,6 +83,20 @@ jobs:
             latest) echo "release_tag=latest" >> "$GITHUB_OUTPUT" ;;
             *) echo "release_channel must be stable or latest." >&2; exit 1 ;;
           esac
+      - name: Group targets by runner
+        id: build_groups
+        env:
+          TARGETS_JSON: ${{ inputs.targets }}
+        run: |
+          set -euo pipefail
+          GROUPS_JSON="$(printf '%s' "$TARGETS_JSON" | jq -c '
+            group_by(.os) | map({
+              os: .[0].os,
+              targets: .,
+              sign_macos: any(.[]; .target | startswith("darwin-"))
+            })
+          ')"
+          echo "groups=$GROUPS_JSON" >> "$GITHUB_OUTPUT"
       - name: Resolve build version
         id: version
         uses: pablozaiden/installer/.github/actions/resolve-version@b47bdc7e7721c12c9b6b8e5e0a97c045bf526a9b
@@ -91,14 +106,14 @@ jobs:
 
   build-binaries:
     needs: metadata
-    name: Build ${{ matrix.target.target }}
-    runs-on: ${{ matrix.target.os }}
+    name: Build on ${{ matrix.group.os }}
+    runs-on: ${{ matrix.group.os }}
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        target: ${{ fromJson(inputs.targets) }}
+        group: ${{ fromJson(needs.metadata.outputs.build_groups) }}
     defaults:
       run:
         shell: bash
@@ -130,7 +145,7 @@ jobs:
         run: ${{ inputs.prebuild_command }}
 
       - name: Prepare macOS signing keychain
-        if: startsWith(matrix.target.target, 'darwin-')
+        if: matrix.group.sign_macos
         env:
           MACOS_SIGNING_CERTIFICATE_BASE64: ${{ secrets.macos_signing_certificate_base64 }}
           MACOS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.macos_signing_certificate_password }}
@@ -184,78 +199,91 @@ jobs:
       - name: Build and stage release assets
         env:
           BINARIES_JSON: ${{ inputs.binaries }}
+          TARGETS_JSON: ${{ toJson(matrix.group.targets) }}
           TAG: v${{ needs.metadata.outputs.version }}
           VERSION: ${{ needs.metadata.outputs.version }}
-          RELEASE_TARGET: ${{ matrix.target.target }}
-          BUN_TARGET: ${{ matrix.target.bun_target }}
           GENERATE_CHECKSUMS: ${{ inputs.generate_checksums }}
         run: |
           set -euo pipefail
-          export TAG VERSION RELEASE_TARGET BUN_TARGET
-          mkdir -p dist/release-assets
+          export TAG VERSION
+          mkdir -p "$RUNNER_TEMP/release-assets"
           BINARIES_PATH="$RUNNER_TEMP/binaries.json"
+          TARGETS_PATH="$RUNNER_TEMP/targets.json"
           printf '%s' "$BINARIES_JSON" > "$BINARIES_PATH"
+          printf '%s' "$TARGETS_JSON" > "$TARGETS_PATH"
 
-          jq -c '.[]' "$BINARIES_PATH" | while read -r spec; do
-            BINARY_NAME="$(printf '%s' "$spec" | jq -r '.name')"
-            ASSET_PREFIX="$(printf '%s' "$spec" | jq -r '.asset_prefix // .assetPrefix // .name')"
-            BUILD_COMMAND="$(printf '%s' "$spec" | jq -r '.build_command // .buildCommand')"
-            OUTPUT_PATH="$(printf '%s' "$spec" | jq -r '.output_path // .outputPath')"
-            ASSET_EXTENSION=""
-            if [[ "$RELEASE_TARGET" == windows-* ]]; then
-              ASSET_EXTENSION=".exe"
-            fi
-            ASSET_NAME="${ASSET_PREFIX}-${TAG}-${RELEASE_TARGET}${ASSET_EXTENSION}"
-            ASSET_PATH="dist/release-assets/${ASSET_NAME}"
-            export BINARY_NAME ASSET_PREFIX ASSET_NAME ASSET_PATH OUTPUT_PATH
+          jq -c '.[]' "$TARGETS_PATH" | while read -r target; do
+            RELEASE_TARGET="$(printf '%s' "$target" | jq -r '.target')"
+            BUN_TARGET="$(printf '%s' "$target" | jq -r '.bun_target')"
+            export RELEASE_TARGET BUN_TARGET
+            echo "::group::Build $RELEASE_TARGET"
 
-            if [ -z "$BUILD_COMMAND" ] || [ "$BUILD_COMMAND" = "null" ]; then
-              echo "Missing build_command for ${BINARY_NAME}" >&2
-              exit 1
-            fi
-            if [ -z "$OUTPUT_PATH" ] || [ "$OUTPUT_PATH" = "null" ]; then
-              echo "Missing output_path for ${BINARY_NAME}" >&2
-              exit 1
-            fi
+            jq -c '.[]' "$BINARIES_PATH" | while read -r spec; do
+              BINARY_NAME="$(printf '%s' "$spec" | jq -r '.name')"
+              ASSET_PREFIX="$(printf '%s' "$spec" | jq -r '.asset_prefix // .assetPrefix // .name')"
+              BUILD_COMMAND="$(printf '%s' "$spec" | jq -r '.build_command // .buildCommand')"
+              OUTPUT_PATH="$(printf '%s' "$spec" | jq -r '.output_path // .outputPath')"
+              ASSET_EXTENSION=""
+              if [[ "$RELEASE_TARGET" == windows-* ]]; then
+                ASSET_EXTENSION=".exe"
+              fi
+              ASSET_NAME="${ASSET_PREFIX}-${TAG}-${RELEASE_TARGET}${ASSET_EXTENSION}"
+              ASSET_PATH="$RUNNER_TEMP/release-assets/${ASSET_NAME}"
+              export BINARY_NAME ASSET_PREFIX ASSET_EXTENSION ASSET_NAME ASSET_PATH OUTPUT_PATH
 
-            eval "$BUILD_COMMAND"
-            RESOLVED_OUTPUT_PATH="$(eval "printf '%s' \"$OUTPUT_PATH\"")"
-            test -f "$RESOLVED_OUTPUT_PATH"
-            if [[ "$RELEASE_TARGET" == darwin-* && -n "${MACOS_SIGNING_KEYCHAIN:-}" ]]; then
-              codesign \
-                --force \
-                --sign "$MACOS_SIGNING_IDENTITY" \
-                --keychain "$MACOS_SIGNING_KEYCHAIN" \
-                --timestamp=none \
-                "$RESOLVED_OUTPUT_PATH"
-            fi
-            if [ "$RESOLVED_OUTPUT_PATH" != "$ASSET_PATH" ]; then
-              cp "$RESOLVED_OUTPUT_PATH" "$ASSET_PATH"
-            fi
-            if [[ "$RELEASE_TARGET" != windows-* ]]; then
-              chmod +x "$ASSET_PATH"
-            fi
-            if [ "$GENERATE_CHECKSUMS" = "true" ]; then
-              ASSET_NAME="$ASSET_NAME" bun -e '
-                import { createHash } from "node:crypto";
-                const name = process.env.ASSET_NAME;
-                const payload = await Bun.file(`dist/release-assets/${name}`).arrayBuffer();
-                const hash = createHash("sha256").update(new Uint8Array(payload)).digest("hex");
-                await Bun.write(`dist/release-assets/${name}.sha256`, `${hash}  ${name}\n`);
-              '
-            fi
+              if [ -z "$BUILD_COMMAND" ] || [ "$BUILD_COMMAND" = "null" ]; then
+                echo "Missing build_command for ${BINARY_NAME}" >&2
+                exit 1
+              fi
+              if [ -z "$OUTPUT_PATH" ] || [ "$OUTPUT_PATH" = "null" ]; then
+                echo "Missing output_path for ${BINARY_NAME}" >&2
+                exit 1
+              fi
+
+              eval "$BUILD_COMMAND"
+              RESOLVED_OUTPUT_PATH="$(eval "printf '%s' \"$OUTPUT_PATH\"")"
+              if [ ! -f "$RESOLVED_OUTPUT_PATH" ]; then
+                echo "Missing build output for ${BINARY_NAME} (${RELEASE_TARGET}): ${RESOLVED_OUTPUT_PATH}" >&2
+                exit 1
+              fi
+              if [[ "$RELEASE_TARGET" == darwin-* && -n "${MACOS_SIGNING_KEYCHAIN:-}" ]]; then
+                codesign \
+                  --force \
+                  --sign "$MACOS_SIGNING_IDENTITY" \
+                  --keychain "$MACOS_SIGNING_KEYCHAIN" \
+                  --timestamp=none \
+                  "$RESOLVED_OUTPUT_PATH"
+              fi
+              if [ "$RESOLVED_OUTPUT_PATH" != "$ASSET_PATH" ]; then
+                cp "$RESOLVED_OUTPUT_PATH" "$ASSET_PATH"
+              fi
+              if [[ "$RELEASE_TARGET" != windows-* ]]; then
+                chmod +x "$ASSET_PATH"
+              fi
+              if [ "$GENERATE_CHECKSUMS" = "true" ]; then
+                bun -e '
+                  import { createHash } from "node:crypto";
+                  const path = process.env.ASSET_PATH;
+                  const name = process.env.ASSET_NAME;
+                  const payload = await Bun.file(path).arrayBuffer();
+                  const hash = createHash("sha256").update(new Uint8Array(payload)).digest("hex");
+                  await Bun.write(`${path}.sha256`, `${hash}  ${name}\n`);
+                '
+              fi
+            done
+            echo "::endgroup::"
           done
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-assets-${{ matrix.target.target }}
-          path: dist/release-assets/*
+          name: release-assets-${{ matrix.group.os }}
+          path: ${{ runner.temp }}/release-assets/*
           if-no-files-found: error
           retention-days: 1
 
       - name: Remove macOS signing keychain
-        if: ${{ always() && startsWith(matrix.target.target, 'darwin-') }}
+        if: ${{ always() && matrix.group.sign_macos }}
         run: |
           set -euo pipefail
           if [ -n "${MACOS_SIGNING_KEYCHAIN:-}" ]; then
