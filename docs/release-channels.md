@@ -19,6 +19,26 @@ versioned releases. Pin the reusable workflow to an installer commit.
 
 The workflow resolves one version for the whole target matrix, updates the
 application package version before building, and retains signing/checksums.
+Targets sharing the same `os` runner label are compiled sequentially in one
+job. Checkout, dependency installation, package-version update and
+`prebuild_command` run once per runner, not once per target. The default targets
+use one `ubuntu-latest` job for Linux/Windows x64 and arm64 and one
+`macos-latest` job for Darwin x64 and arm64. The macOS default runner is ARM64;
+cross-compilation produces the x64 binary on that same host. Custom target
+lists keep the existing `{os, target, bun_target}` format; `os` identifies the
+execution host, not necessarily the binary's target OS.
+
+Each target build receives its own `RELEASE_TARGET` and `BUN_TARGET`.
+`ASSET_EXTENSION` is `.exe` for Windows and empty for other targets. Include it
+in `output_path` when Bun appends the executable extension, for example
+`dist/myproject-$RELEASE_TARGET$ASSET_EXTENSION`, or compile directly to
+`$ASSET_PATH`. Release
+assets are staged under the runner's temporary directory so later target
+builds can clean their output directories without deleting earlier assets.
+Both Darwin binaries retain optional certificate signing, with one signing
+keychain setup and cleanup per macOS job. Metadata resolution and publication
+remain separate jobs; this grouping does not replace native OS testing.
+
 Main builds use `<next-patch>-main-<UTC-date-and-minute>-<short-sha>`, sharing
 the existing build-version action with Docker builds. Do not disable
 `update_package_version` for rolling builds: the embedded identity determines
