@@ -12,7 +12,7 @@ on:
         description: >-
           JSON array of binary specs. Each item supports name, optional asset_prefix,
           build_command, and output_path. The workflow exposes TAG, VERSION,
-          RELEASE_TARGET, BUN_TARGET, BINARY_NAME, ASSET_PREFIX, ASSET_EXTENSION, and ASSET_PATH
+          RELEASE_TARGET, BUN_TARGET, BINARY_NAME, ASSET_PREFIX, and ASSET_PATH
           to build_command.
         required: true
         type: string
@@ -42,7 +42,7 @@ on:
         type: boolean
         default: true
       targets:
-        description: JSON targets grouped by os runner. Defaults to Linux/Windows on Ubuntu and Darwin on macOS, each x64/arm64.
+        description: JSON targets grouped by os runner. Defaults to Linux on Ubuntu and Darwin on macOS, each x64/arm64.
         required: false
         type: string
         default: >-
@@ -50,9 +50,7 @@ on:
             {"os":"ubuntu-latest","target":"linux-x64","bun_target":"bun-linux-x64"},
             {"os":"ubuntu-latest","target":"linux-arm64","bun_target":"bun-linux-arm64"},
             {"os":"macos-latest","target":"darwin-x64","bun_target":"bun-darwin-x64"},
-            {"os":"macos-latest","target":"darwin-arm64","bun_target":"bun-darwin-arm64"},
-            {"os":"ubuntu-latest","target":"windows-x64","bun_target":"bun-windows-x64"},
-            {"os":"ubuntu-latest","target":"windows-arm64","bun_target":"bun-windows-arm64"}
+            {"os":"macos-latest","target":"darwin-arm64","bun_target":"bun-darwin-arm64"}
           ]
     secrets:
       macos_signing_certificate_base64:
@@ -223,13 +221,9 @@ jobs:
               ASSET_PREFIX="$(printf '%s' "$spec" | jq -r '.asset_prefix // .assetPrefix // .name')"
               BUILD_COMMAND="$(printf '%s' "$spec" | jq -r '.build_command // .buildCommand')"
               OUTPUT_PATH="$(printf '%s' "$spec" | jq -r '.output_path // .outputPath')"
-              ASSET_EXTENSION=""
-              if [[ "$RELEASE_TARGET" == windows-* ]]; then
-                ASSET_EXTENSION=".exe"
-              fi
-              ASSET_NAME="${ASSET_PREFIX}-${TAG}-${RELEASE_TARGET}${ASSET_EXTENSION}"
+              ASSET_NAME="${ASSET_PREFIX}-${TAG}-${RELEASE_TARGET}"
               ASSET_PATH="$RUNNER_TEMP/release-assets/${ASSET_NAME}"
-              export BINARY_NAME ASSET_PREFIX ASSET_EXTENSION ASSET_NAME ASSET_PATH OUTPUT_PATH
+              export BINARY_NAME ASSET_PREFIX ASSET_NAME ASSET_PATH OUTPUT_PATH
 
               if [ -z "$BUILD_COMMAND" ] || [ "$BUILD_COMMAND" = "null" ]; then
                 echo "Missing build_command for ${BINARY_NAME}" >&2
@@ -257,9 +251,7 @@ jobs:
               if [ "$RESOLVED_OUTPUT_PATH" != "$ASSET_PATH" ]; then
                 cp "$RESOLVED_OUTPUT_PATH" "$ASSET_PATH"
               fi
-              if [[ "$RELEASE_TARGET" != windows-* ]]; then
-                chmod +x "$ASSET_PATH"
-              fi
+              chmod +x "$ASSET_PATH"
               if [ "$GENERATE_CHECKSUMS" = "true" ]; then
                 bun -e '
                   import { createHash } from "node:crypto";
