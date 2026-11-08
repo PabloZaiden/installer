@@ -26,6 +26,14 @@ on:
         required: false
         type: string
         default: ""
+      macos_finalize_command:
+        description: >-
+          Optional command to finalize all Darwin artifacts after compilation and
+          before upload. Receives MACOS_ARTIFACT_PATHS_JSON and the prepared
+          signing keychain; checksums are regenerated afterward. Requires signing.
+        required: false
+        type: string
+        default: ""
       bun_version:
         description: Bun version passed to oven-sh/setup-bun.
         required: false
@@ -58,6 +66,15 @@ on:
         required: false
       macos_signing_certificate_password:
         description: Password for the macOS PKCS#12 signing certificate.
+        required: false
+      macos_notarization_key_p8:
+        description: Optional private App Store Connect API key for Mac finalization.
+        required: false
+      macos_notarization_key_id:
+        description: Optional App Store Connect API key ID for Mac finalization.
+        required: false
+      macos_notarization_issuer_id:
+        description: Optional App Store Connect issuer ID for Mac finalization.
         required: false
 
 jobs:
@@ -147,9 +164,16 @@ jobs:
         env:
           MACOS_SIGNING_CERTIFICATE_BASE64: ${{ secrets.macos_signing_certificate_base64 }}
           MACOS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.macos_signing_certificate_password }}
+          MACOS_FINALIZE_COMMAND: ${{ inputs.macos_finalize_command }}
         run: |
+          set +x
           set -euo pipefail
+          umask 077
           if [ -z "${MACOS_SIGNING_CERTIFICATE_BASE64:-}" ] && [ -z "${MACOS_SIGNING_CERTIFICATE_PASSWORD:-}" ]; then
+            if [ -n "$MACOS_FINALIZE_COMMAND" ]; then
+              echo "::error::Mac finalization requires both signing secrets." >&2
+              exit 1
+            fi
             echo "::notice::No macOS signing certificate was supplied; macOS artifacts will remain unsigned."
             exit 0
           fi
@@ -178,12 +202,21 @@ jobs:
             -S apple-tool:,apple:,codesign: \
             -s \
             -k "$KEYCHAIN_PASSWORD" \
-            "$KEYCHAIN_PATH"
+            "$KEYCHAIN_PATH" > /dev/null
           security list-keychains -d user -s "$KEYCHAIN_PATH"
 
-          SIGNING_IDENTITY="$(security find-certificate -a -Z "$KEYCHAIN_PATH" \
-            | sed -n 's/^SHA-1 hash: \([0-9A-Fa-f]\{40\}\)$/\1/p' \
-            | head -n 1)"
+          if [ -n "$MACOS_FINALIZE_COMMAND" ]; then
+            SIGNING_IDENTITY="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+              | sed -n 's/^ *[0-9][0-9]*) \([0-9A-Fa-f]\{40\}\) .*$/\1/p')"
+            if [[ ! "$SIGNING_IDENTITY" =~ ^[0-9A-Fa-f]{40}$ ]]; then
+              echo "::error::Mac finalization requires exactly one valid signing identity." >&2
+              exit 1
+            fi
+          else
+            SIGNING_IDENTITY="$(security find-certificate -a -Z "$KEYCHAIN_PATH" \
+              | sed -n 's/^SHA-1 hash: \([0-9A-Fa-f]\{40\}\)$/\1/p' \
+              | head -n 1)"
+          fi
           if [ -z "$SIGNING_IDENTITY" ]; then
             echo "No imported macOS signing certificate fingerprint was found." >&2
             security find-certificate -a -Z "$KEYCHAIN_PATH" >&2 || true
@@ -266,6 +299,36 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: Finalize Mac artifacts
+        if: ${{ matrix.group.sign_macos && inputs.macos_finalize_command != '' }}
+        env:
+          MACOS_FINALIZE_COMMAND: ${{ inputs.macos_finalize_command }}
+          MACOS_NOTARIZATION_KEY_P8: ${{ secrets.macos_notarization_key_p8 }}
+          MACOS_NOTARIZATION_KEY_ID: ${{ secrets.macos_notarization_key_id }}
+          MACOS_NOTARIZATION_ISSUER_ID: ${{ secrets.macos_notarization_issuer_id }}
+          TAG: v${{ needs.metadata.outputs.version }}
+          GENERATE_CHECKSUMS: ${{ inputs.generate_checksums }}
+        run: |
+          set -euo pipefail
+          export MACOS_ARTIFACT_PATHS_JSON="$(jq -cn \
+            --arg root "$RUNNER_TEMP/release-assets" --arg tag "$TAG" \
+            --slurpfile targets "$RUNNER_TEMP/targets.json" \
+            --slurpfile binaries "$RUNNER_TEMP/binaries.json" '
+            [$targets[0][] | select(.target | startswith("darwin-")) | .target as $target
+              | $binaries[0][]
+              | $root + "/" + (.asset_prefix // .assetPrefix // .name) + "-" + $tag + "-" + $target]
+          ')"
+          bash -euo pipefail -c "$MACOS_FINALIZE_COMMAND"
+          printf '%s' "$MACOS_ARTIFACT_PATHS_JSON" | jq -r '.[]' | while IFS= read -r artifact; do
+            if [[ ! -f "$artifact" ]]; then
+              echo "::error::Missing finalized Mac artifact: $artifact." >&2
+              exit 1
+            fi
+            if [ "$GENERATE_CHECKSUMS" = true ]; then
+              (cd "$(dirname "$artifact")" && shasum -a 256 "$(basename "$artifact")") > "$artifact.sha256"
+            fi
+          done
+
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -276,14 +339,24 @@ jobs:
 
       - name: Remove macOS signing keychain
         if: ${{ always() && matrix.group.sign_macos }}
+        env:
+          MACOS_FINALIZE_COMMAND: ${{ inputs.macos_finalize_command }}
         run: |
           set -euo pipefail
+          cleanup_status=0
           if [ -n "${MACOS_SIGNING_KEYCHAIN:-}" ]; then
-            security delete-keychain "$MACOS_SIGNING_KEYCHAIN" || true
+            if [ -n "$MACOS_FINALIZE_COMMAND" ]; then
+              if [[ -f "$MACOS_SIGNING_KEYCHAIN" ]]; then
+                security delete-keychain "$MACOS_SIGNING_KEYCHAIN" || cleanup_status=$?
+              fi
+            else
+              security delete-keychain "$MACOS_SIGNING_KEYCHAIN" || true
+            fi
           fi
           if [ -n "${MACOS_SIGNING_CERTIFICATE_PATH:-}" ]; then
-            rm -f "$MACOS_SIGNING_CERTIFICATE_PATH"
+            rm -f "$MACOS_SIGNING_CERTIFICATE_PATH" || cleanup_status=$?
           fi
+          exit "$cleanup_status"
 
   publish-release-assets:
     name: Publish release assets
