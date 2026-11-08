@@ -297,6 +297,25 @@ selects the imported certificate by fingerprint. It does not change trust
 settings, so self-signed certificates remain usable for internal signing
 without requiring a trust-root workaround.
 
+Projects requiring distribution signing or notarization can opt in with
+`macos_finalize_command`. It runs once per Darwin build group after all
+compilation and staging, before artifact upload; failure blocks publication.
+The command receives `MACOS_ARTIFACT_PATHS_JSON`, a JSON array of the staged
+Darwin paths, and `MACOS_SIGNING_KEYCHAIN`/`MACOS_SIGNING_IDENTITY` from the
+temporary signing keychain. Required signing credentials must be present and
+the keychain must contain exactly one valid code-signing identity. Finalization
+can re-sign with the project's runtime entitlements and secure timestamps;
+the workflow regenerates enabled checksums afterward.
+
+Optional `macos_notarization_key_p8`, `macos_notarization_key_id` and
+`macos_notarization_issuer_id` secrets are exposed only to finalization as
+`MACOS_NOTARIZATION_KEY_P8`, `MACOS_NOTARIZATION_KEY_ID` and
+`MACOS_NOTARIZATION_ISSUER_ID`, not to installation or compilation. The caller
+owns submission, acceptance and signature verification, and cleanup of any
+private files it creates. The workflow removes its signing credentials and
+keychain; cleanup failure blocks the opted-in job. With no finalizer, existing
+optional signing behavior is unchanged.
+
 For a project with multiple binaries:
 
 ```yaml
