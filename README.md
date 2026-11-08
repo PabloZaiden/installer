@@ -300,7 +300,8 @@ without requiring a trust-root workaround.
 Projects requiring distribution signing or notarization can opt in with
 `macos_finalize_command`. It runs once per Darwin build group after all
 compilation and staging, before artifact upload; failure blocks publication.
-The command receives `MACOS_ARTIFACT_PATHS_JSON`, a JSON array of the staged
+The command runs with strict Bash error, unset-variable and pipeline handling.
+It receives `MACOS_ARTIFACT_PATHS_JSON`, a JSON array of the staged
 Darwin paths, and `MACOS_SIGNING_KEYCHAIN`/`MACOS_SIGNING_IDENTITY` from the
 temporary signing keychain. Required signing credentials must be present and
 the keychain must contain exactly one valid code-signing identity. Finalization

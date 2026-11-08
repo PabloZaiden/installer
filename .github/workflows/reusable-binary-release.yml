@@ -318,7 +318,7 @@ jobs:
               | $binaries[0][]
               | $root + "/" + (.asset_prefix // .assetPrefix // .name) + "-" + $tag + "-" + $target]
           ')"
-          bash -c "$MACOS_FINALIZE_COMMAND"
+          bash -euo pipefail -c "$MACOS_FINALIZE_COMMAND"
           printf '%s' "$MACOS_ARTIFACT_PATHS_JSON" | jq -r '.[]' | while IFS= read -r artifact; do
             if [[ ! -f "$artifact" ]]; then
               echo "::error::Missing finalized Mac artifact: $artifact." >&2
