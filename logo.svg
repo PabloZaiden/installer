@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Installer</title>
+  <desc id="desc">A geometric white I with a blue accent dot centered inside its top bar.</desc>
+
+  <rect width="512" height="512" rx="112" fill="#2b2b2b"/>
+
+  <path fill="#fff" d="M144 146h224v65H144zM223.5 224h65v65h-65zM144 301h224v65H144z"/>
+
+  <circle cx="256" cy="178.5" r="22.75" fill="#3b82f6"/>
+</svg>
