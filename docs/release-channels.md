@@ -58,6 +58,11 @@ checksums are uploaded first, followed by `release.json`:
 
 Readers resolve that build version, rather than comparing the literal tag
 `latest`. Old rolling assets are removed after the metadata switches.
+If a separate publisher manages assets on the same rolling release, set
+`rolling_retained_asset_pattern` to a jq regular expression matching their
+names. The binary publisher leaves matching assets for that publisher to
+prune after its own metadata switches. The default retains no extra assets
+and does not change stable publication.
 Workflow artifacts used to transfer binaries between jobs expire after one
 day; GitHub releases remain the distribution boundary.
 Downloads already in flight may fail safely during replacement and can be
