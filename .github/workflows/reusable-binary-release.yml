@@ -8,6 +8,11 @@ on:
         required: false
         type: string
         default: stable
+      rolling_retained_asset_pattern:
+        description: Optional jq regex matching rolling release asset names that the caller manages and prunes separately.
+        required: false
+        type: string
+        default: ""
       binaries:
         description: >-
           JSON array of binary specs. Each item supports name, optional asset_prefix,
@@ -386,10 +391,12 @@ jobs:
           CHANNEL: ${{ inputs.release_channel }}
           TAG: ${{ needs.metadata.outputs.release_tag }}
           VERSION: ${{ needs.metadata.outputs.version }}
+          RETAINED_ASSET_PATTERN: ${{ inputs.rolling_retained_asset_pattern }}
         shell: bash
         run: |
           set -euo pipefail
           if [ "$CHANNEL" = "latest" ]; then
+            jq -n --arg pattern "$RETAINED_ASSET_PATTERN" '"" | test($pattern)' > /dev/null
             DEFAULT_BRANCH="$(gh api "repos/$GH_REPO" --jq '.default_branch')"
             HEAD_SHA="$(gh api "repos/$GH_REPO/commits/$DEFAULT_BRANCH" --jq '.sha')"
             if [ "$HEAD_SHA" != "$GITHUB_SHA" ]; then
@@ -416,7 +423,13 @@ jobs:
             gh release edit latest --title latest --prerelease --latest=false \
               --notes "Rolling main build $VERSION ($GITHUB_SHA)."
             gh api "repos/$GH_REPO/releases/tags/latest" \
-              --jq ".assets[] | select(.name != \"release.json\" and (.name | contains(\"-v$VERSION-\")) == false) | .id" \
+              | jq -r --arg version "$VERSION" --arg pattern "$RETAINED_ASSET_PATTERN" '
+                .assets[]
+                | select(.name != "release.json")
+                | select(.name | contains("-v\($version)-") | not)
+                | select($pattern == "" or (.name | test($pattern) | not))
+                | .id
+              ' \
               | while read -r asset_id; do
                 gh api "repos/$GH_REPO/releases/assets/$asset_id" --method DELETE
               done
